@@ -592,7 +592,7 @@ if (typeof addEventListener === 'function') {
   });
 }
 
-export const uid = () => crypto.randomUUID();
+export const uid = () => (globalThis.crypto?.randomUUID?.() ?? (globalThis.crypto?.getRandomValues ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("") : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`));
 export function activity(u, text, bookId = '') {
   u.activity.unshift({ id: uid(), text, bookId, date: new Date().toISOString() });
   u.activity = u.activity.slice(0, 200);

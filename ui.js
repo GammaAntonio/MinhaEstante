@@ -47,7 +47,7 @@ export const panel = (title, body, aside = null) =>
     body,
   );
 export function field(label, input, hint = "") {
-  const id = input.id || `field-${crypto.randomUUID()}`;
+  const id = input.id || `field-${(globalThis.crypto?.randomUUID?.() ?? (globalThis.crypto?.getRandomValues ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("") : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`))}`;
   input.id = id;
   return h(
     "div",

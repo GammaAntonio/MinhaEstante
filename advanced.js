@@ -494,7 +494,7 @@ export async function advancedDocument(user, code, nonce, { friendship = null } 
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: http: data:; connect-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css.replace(/<\/style/gi, "<\\/style")}</style><script>${bridge}<\/script></head><body>${html}<script>${js.replace(/<\/script/gi, "<\\/script")}<\/script></body></html>`;
 }
 export async function advancedFrame(user, code, { preview = false, friendship = null } = {}) {
-  const nonce = crypto.randomUUID(),
+  const nonce = (globalThis.crypto?.randomUUID?.() ?? (globalThis.crypto?.getRandomValues ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("") : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)),
     frame = h("iframe", {
       class: preview ? "preview-frame" : "custom-frame",
       sandbox: "allow-scripts",
