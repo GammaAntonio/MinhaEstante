@@ -1,0 +1,15 @@
+.vs/
+.vscode/
+node_modules/
+*.log
+bin/
+obj/
+*.njsproj.user
+
+# Variáveis e chaves privadas
+.env
+.env.*
+!.env.example
+
+# Todos os dados privados e mutáveis do servidor
+data/

@@ -1,0 +1,1 @@
+MinhaEstante v5 corrigida — livros/álbuns separados + mural padrão "estante de livros"; Antonio mantém "quadrinhos na estante".

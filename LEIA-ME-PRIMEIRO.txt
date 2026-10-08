@@ -1,0 +1,13 @@
+MINHAESTANTE V4 — IMPORTANTE
+
+O problema da V3 era a porta 4173: se uma versão antiga ainda estivesse rodando, o script abria aquele servidor antigo.
+
+Esta versão usa: http://127.0.0.1:4183/
+
+1. Extraia a pasta inteira.
+2. Abra MinhaEstante-v4.sln OU abra a pasta.
+3. Rode iniciar.ps1 ou npm start.
+4. Confirme que a URL é http://127.0.0.1:4183/
+5. No topo do site deve aparecer discretamente: build V4.
+
+Se abrir 4173, você está vendo a versão antiga.
