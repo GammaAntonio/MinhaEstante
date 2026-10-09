@@ -160,6 +160,7 @@ function renderHeader(route) {
   const nav = [
     ["home", "/home"],
     ["livros", "/livros"],
+    ["pessoas", "/usuarios"],
     ["álbuns", "/albuns"],
     ["listas", musical ? "/listas?media=albums" : "/listas"],
     ["diário", "/diario"],
@@ -1363,6 +1364,184 @@ async function friendsPage(query) {
   );
 }
 
+
+function normalizePersonSearch(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/^@/, "")
+    .trim();
+}
+
+function personSearchScore(user, query) {
+  const q = normalizePersonSearch(query);
+
+  if (!q) return 0;
+
+  const fields = [
+    user?.page?.displayName,
+    user?.username,
+    user?.page?.title,
+  ]
+    .map(normalizePersonSearch)
+    .filter(Boolean);
+
+  let best = Infinity;
+
+  for (const value of fields) {
+    if (value === q) {
+      best = Math.min(best, 0);
+    } else if (value.startsWith(q)) {
+      best = Math.min(best, 10 + value.length - q.length);
+    } else if (
+      value
+        .split(/\s+/)
+        .some((word) => word.startsWith(q))
+    ) {
+      best = Math.min(best, 20);
+    } else if (value.includes(q)) {
+      best = Math.min(best, 30 + value.indexOf(q));
+    }
+  }
+
+  return best;
+}
+
+function peopleSearchForm(query = "") {
+  const form = h(
+    "form",
+    { class: "search-form", role: "search" },
+
+    h(
+      "label",
+      { class: "sr-only", for: "people-query" },
+      "Pesquisar pessoas",
+    ),
+
+    input("query", query, {
+      id: "people-query",
+      placeholder: "nome ou @usuário…",
+      maxlength: 100,
+      autocomplete: "off",
+    }),
+
+    submit("buscar"),
+  );
+
+  return formSubmit(form, (data) => {
+    const value = String(data.get("query") || "").trim();
+
+    navigate(
+      value
+        ? `/usuarios?q=${encodeURIComponent(value)}`
+        : "/usuarios",
+    );
+  });
+}
+
+function peoplePage(query) {
+  const search = String(query.get("q") || "").trim();
+
+  const people = Store.users()
+    .filter((user) => user?.role !== "admin")
+    .map((user) => ({
+      user,
+      score: personSearchScore(user, search),
+    }))
+    .filter((item) => Number.isFinite(item.score))
+    .sort(
+      (a, b) =>
+        a.score - b.score ||
+        String(
+          a.user?.page?.displayName ||
+            a.user?.username ||
+            "",
+        ).localeCompare(
+          String(
+            b.user?.page?.displayName ||
+              b.user?.username ||
+              "",
+          ),
+          "pt-BR",
+          { sensitivity: "base" },
+        ),
+    );
+
+  return h(
+    "div",
+    {},
+
+    heading(
+      "pessoas",
+      "procure uma página pelo nome ou pelo @usuário.",
+    ),
+
+    peopleSearchForm(search),
+
+    h(
+      "p",
+      { class: "search-status" },
+
+      search
+        ? `${people.length} ${
+            people.length === 1
+              ? "pessoa encontrada"
+              : "pessoas encontradas"
+          } para “${search}”.`
+        : `${people.length} ${
+            people.length === 1
+              ? "pessoa cadastrada"
+              : "pessoas cadastradas"
+          }.`,
+    ),
+
+    people.length
+      ? h(
+          "div",
+          { class: "friend-grid" },
+
+          people.map(({ user }) =>
+            h(
+              "article",
+              { class: "friend-card" },
+
+              avatar(user),
+
+              h(
+                "div",
+                { class: "friend-card-info" },
+
+                h(
+                  "strong",
+                  {},
+                  user.page?.displayName ||
+                    user.username,
+                ),
+
+                h(
+                  "small",
+                  {},
+                  userIdentity(user, {
+                    username: true,
+                    linkProfile: true,
+                  }),
+                ),
+
+                link(
+                  "visitar página",
+                  `#/pagina/${user.username}`,
+                ),
+              ),
+            ),
+          ),
+        )
+      : empty(
+          "ninguém encontrado.",
+          "Tente outro nome ou @usuário.",
+        ),
+  );
+}
 const selectedUser = (query) =>
   query.get("user") ? Store.userByName(query.get("user")) : Store.currentUser();
 function reviewsPage(user) {
@@ -2072,7 +2251,9 @@ async function render(route, active) {
       case "amigos":
         content = await friendsPage(route.query);
         break;
-      case "catalogo":
+      case "usuarios":
+        content = peoplePage(route.query);
+        break;      case "catalogo":
         content = route.query.get("media") === "albums"
           ? albumCatalogPage(route.query, active)
           : catalogPage(route.query, active);
