@@ -497,7 +497,7 @@ export async function advancedFrame(user, code, { preview = false, friendship = 
   const nonce = (globalThis.crypto?.randomUUID?.() ?? (globalThis.crypto?.getRandomValues ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("") : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)),
     frame = h("iframe", {
       class: preview ? "preview-frame" : "custom-frame",
-      sandbox: "allow-scripts",
+      sandbox: "allow-scripts allow-popups allow-popups-to-escape-sandbox",
       title: preview
         ? "Prévia isolada da sua página"
         : "Página pessoal em ambiente isolado",
