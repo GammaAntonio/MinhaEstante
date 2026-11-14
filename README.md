@@ -186,3 +186,15 @@ Cada página pessoal mantém duas configurações em `page.mediaPages`:
 O editor mostra **Livros / Álbuns** no topo. Título da página, subtítulo, bio, imagens, paleta, fontes, mural, gadgets e código avançado podem ser diferentes. O botão de padronização copia apenas apresentação/configuração, nunca livros, álbuns, notas, resenhas ou listas.
 
 O formato antigo (`page.customization`, `page.gadgets`, `page.customCode` etc.) é preservado como espelho da configuração de Livros para compatibilidade. Na inicialização, dados anteriores são migrados sem apagar conteúdo do usuário.
+
+## Persistência PostgreSQL
+
+O servidor usa PostgreSQL via pg. Execute npm ci, configure DATABASE_URL ou as variáveis PGHOST, PGPORT, PGDATABASE e PGUSER e inicialize o banco antes de npm start. Node pode carregar um arquivo privado com node --env-file=.env server.mjs. Os arquivos de mídia continuam em data/audio e data/page-assets. MINHAESTANTE_DATA_DIR pode apontar para um diretório de mídia separado em um teste. As sessões assinadas continuam válidas porque a migração preserva a chave de assinatura.
+
+Em um banco vazio, execute node scripts/migrate-json-to-postgres.mjs /caminho/data --dry-run. Depois rode o mesmo comando sem --dry-run e execute node scripts/verify-migration.mjs /caminho/data antes de abrir o serviço para gravações. O verificador reconstrói os quatro conjuntos de registros, compara por valor e confere o inventário de mídias. Uma repetição com os mesmos registros apenas confirma a paridade. Uma origem divergente interrompe a operação.
+
+No DBeaver, escolha PostgreSQL, host do banco 127.0.0.1 e porta 5432. Ative SSH com host 147.15.126.191, porta 22, usuário opc e a chave SSH existente. Use um papel próprio somente leitura para inspeção. As credenciais devem ficar no gerenciador local do DBeaver.
+
+A rotina scripts/backup-database.sh gera dump, arquivos de mídia e checksums. Configure PGDATABASE, MEDIA_DIR, BACKUP_DIR e OFFSITE_DIR montado em armazenamento independente. Passe explicitamente ao script os arquivos da unit, credenciais protegidas e Caddy para incluí-los. Agende a rotina só após testar a restauração em ambiente separado. scripts/restore-database.sh recebe a pasta do backup e um diretório novo para os arquivos, e exige um banco vazio.
+
+Durante corte ou retorno, pare a aplicação para impedir gravações concorrentes. Se o PostgreSQL já recebeu gravações públicas, use a versão anterior compatível com PostgreSQL ou exporte e reconcilie os dados antes de voltar ao backend JSON. O snapshot JSON anterior ao corte serve para recuperar uma implantação que ainda não recebeu tráfego de escrita.

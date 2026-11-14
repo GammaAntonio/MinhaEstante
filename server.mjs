@@ -1,13 +1,14 @@
+import { createRepository } from "./database/repositories/persistence.mjs";
 import { MAX_CREATOR_TRACKS } from "./creator-playlist.js";
 import { cleanStickers } from "./sticker-data.js";
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { musicProxy } from "./music-proxy.mjs";
-import { blankUser, seedUsers } from "./data.js";
+import { blankUser } from "./data.js";
 import { hasMP3Signature } from "./mp3-validation.js";
 import {
   authRecord,
@@ -22,17 +23,11 @@ import {
 } from "./auth.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(root, "data");
-const usersFile = path.join(dataDir, "users.json");
-const defaultUsersFile = path.join(dataDir, "default-users.json");
-const authFile = path.join(dataDir, "auth.json");
-const defaultAuthFile = path.join(dataDir, "default-auth.json");
-const accountsFile = path.join(dataDir, "accounts.json");
-const defaultAccountsFile = path.join(dataDir, "default-accounts.json");
-const friendshipsFile = path.join(dataDir, "friendships.json");
-const defaultFriendshipsFile = path.join(dataDir, "default-friendships.json");
-const sessionSecretFile = path.join(dataDir, "session-secret");
-const creatorIdentityFile = path.join(dataDir, "creator.json");
+const dataDir = process.env.MINHAESTANTE_DATA_DIR ? path.resolve(process.env.MINHAESTANTE_DATA_DIR) : path.join(root, "data");
+const usersFile = "users";
+const authFile = "auth";
+const accountsFile = "accounts";
+const friendshipsFile = "friendships";
 const audioDir = path.join(dataDir, "audio");
 const pageAssetsDir = path.join(dataDir, "page-assets");
 
@@ -52,74 +47,19 @@ const types = {
   ".m4a": "audio/mp4",
 };
 
-async function atomicWriteJson(file, value) {
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(temp, JSON.stringify(value, null, 2), "utf8");
-  await fsp.rename(temp, file);
-}
+const repository = createRepository();
+const withDataMutation = repository.transaction;
+const writeRecords = repository.write;
 
-let dataMutationQueue = Promise.resolve();
-function withDataMutation(task) {
-  const run = dataMutationQueue.then(task, task);
-  dataMutationQueue = run.catch(() => {});
-  return run;
-}
-
-async function readJsonFile(file, fallback = null) {
+async function saveMedia(file, kind, body) {
+  await fsp.writeFile(file, body, { flag: "wx" });
   try {
-    return JSON.parse(await fsp.readFile(file, "utf8"));
+    await repository.query("INSERT INTO media_files VALUES ($1,$2,$3)",
+      [path.relative(dataDir,file).split(path.sep).join("/"),kind,body.length]);
   } catch (error) {
-    if (error?.code === "ENOENT") return fallback;
+    await fsp.unlink(file).catch(() => {});
     throw error;
   }
-}
-
-async function migrateCredentialFile(userFile, credentialFile) {
-  const users = await readJsonFile(userFile, null);
-  if (!Array.isArray(users)) return;
-  const auth = await readJsonFile(credentialFile, []);
-  const byUserId = new Map(
-    (Array.isArray(auth) ? auth : [])
-      .filter((record) => record?.userId && record?.passwordHash)
-      .map((record) => [String(record.userId), record]),
-  );
-  let usersChanged = false;
-  let authChanged = !Array.isArray(auth);
-
-  for (const user of users) {
-    if (!user?.id) continue;
-    let record = byUserId.get(String(user.id));
-    let passwordHash = record?.passwordHash || "";
-    if (typeof user.password === "string" && user.password) {
-      passwordHash = await hashPassword(user.password);
-      usersChanged = true;
-    } else if (typeof user.passwordHash === "string" && user.passwordHash) {
-      passwordHash = user.passwordHash;
-      usersChanged = true;
-    }
-    if (Object.hasOwn(user, "password")) {
-      delete user.password;
-      usersChanged = true;
-    }
-    if (Object.hasOwn(user, "passwordHash")) {
-      delete user.passwordHash;
-      usersChanged = true;
-    }
-    if (passwordHash) {
-      const next = authRecord(user, passwordHash);
-      if (JSON.stringify(record || null) !== JSON.stringify(next)) {
-        byUserId.set(String(user.id), next);
-        authChanged = true;
-      }
-    }
-  }
-
-  const validIds = new Set(users.map((user) => String(user.id)));
-  const nextAuth = [...byUserId.values()].filter((record) => validIds.has(String(record.userId)));
-  if (nextAuth.length !== byUserId.size) authChanged = true;
-  if (usersChanged) await atomicWriteJson(userFile, users);
-  if (authChanged || !(await fileExists(credentialFile)))
-    await atomicWriteJson(credentialFile, nextAuth);
 }
 
 async function fileExists(file) {
@@ -132,96 +72,22 @@ async function fileExists(file) {
 }
 
 let dataReadyPromise;
+let signingSecret;
 async function ensureDataDirs() {
   dataReadyPromise ??= (async () => {
-    await fsp.mkdir(dataDir, { recursive: true });
-    await fsp.mkdir(audioDir, { recursive: true });
-    await fsp.mkdir(pageAssetsDir, { recursive: true });
-
-    if (!(await fileExists(defaultUsersFile)))
-      await atomicWriteJson(defaultUsersFile, seedUsers());
-
-    if (!(await fileExists(usersFile))) {
-      const defaults = await readJsonFile(defaultUsersFile, seedUsers());
-      await atomicWriteJson(usersFile, defaults);
-      if (await fileExists(defaultAuthFile))
-        await fsp.copyFile(defaultAuthFile, authFile);
-    }
-
-    await migrateCredentialFile(defaultUsersFile, defaultAuthFile);
-    await migrateCredentialFile(usersFile, authFile);
-
-    const currentUsers = await readJsonFile(usersFile, []);
-    const defaultUsers = await readJsonFile(defaultUsersFile, []);
-    if (!(await fileExists(defaultAccountsFile)))
-      await atomicWriteJson(
-        defaultAccountsFile,
-        (Array.isArray(defaultUsers) ? defaultUsers : []).map((user) => accountRecord(user)),
-      );
-    if (!(await fileExists(accountsFile)))
-      await atomicWriteJson(
-        accountsFile,
-        (Array.isArray(currentUsers) ? currentUsers : []).map((user) => accountRecord(user)),
-      );
-    if (!(await fileExists(defaultFriendshipsFile)))
-      await atomicWriteJson(defaultFriendshipsFile, []);
-    if (!(await fileExists(friendshipsFile)))
-      await atomicWriteJson(friendshipsFile, []);
-
-    await reconcilePrivateData(currentUsers);
-
-    const creatorIdentity = await readJsonFile(creatorIdentityFile, null);
-    if (creatorIdentity?.userId) {
-      creatorUserId = String(creatorIdentity.userId);
-    } else {
-      const users = await readJsonFile(usersFile, []);
-      const creator = Array.isArray(users)
-        ? users.find((user) => user?.username === "antonio")
-        : null;
-      if (creator?.id) {
-        creatorUserId = String(creator.id);
-        await atomicWriteJson(creatorIdentityFile, {
-          userId: creatorUserId,
-        });
-      }
-    }
-
-    if (!(await fileExists(sessionSecretFile)))
-      await fsp.writeFile(sessionSecretFile, randomBytes(32).toString("hex"), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+    const { rows } = await repository.query("SELECT session_secret,creator_id FROM app_state");
+    if (!rows.length) throw Error("Banco não inicializado. Execute a migração.");
+    signingSecret = rows[0].session_secret;
+    creatorUserId = rows[0].creator_id;
+    await fsp.mkdir(audioDir, {recursive:true});
+    await fsp.mkdir(pageAssetsDir, {recursive:true});
   })();
   return dataReadyPromise;
 }
-
-async function readUsersFile() {
-  await ensureDataDirs();
-  const value = await readJsonFile(usersFile, []);
-  if (!Array.isArray(value)) throw new Error("users.json precisa conter uma lista.");
-  return value;
-}
-
-async function readAuthFile() {
-  await ensureDataDirs();
-  const value = await readJsonFile(authFile, []);
-  if (!Array.isArray(value)) throw new Error("auth.json precisa conter uma lista.");
-  return value;
-}
-
-async function readAccountsFile() {
-  await ensureDataDirs();
-  const value = await readJsonFile(accountsFile, []);
-  if (!Array.isArray(value)) throw new Error("accounts.json precisa conter uma lista.");
-  return value;
-}
-
-async function readFriendshipsFile() {
-  await ensureDataDirs();
-  const value = await readJsonFile(friendshipsFile, []);
-  if (!Array.isArray(value)) throw new Error("friendships.json precisa conter uma lista.");
-  return value;
-}
+const readUsersFile = () => repository.read(usersFile);
+const readAuthFile = () => repository.read(authFile);
+const readAccountsFile = () => repository.read(accountsFile);
+const readFriendshipsFile = () => repository.read(friendshipsFile);
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
@@ -291,41 +157,7 @@ function validateAccountInput(payload, { registration = false } = {}) {
   return { fullName, birthDate, city, email, phone, passwordHint, age, registration };
 }
 
-async function reconcilePrivateData(users) {
-  const safeUsers = Array.isArray(users) ? users : [];
-  const validIds = new Set(safeUsers.map((user) => String(user.id)));
-  const storedAccounts = await readJsonFile(accountsFile, []);
-  const byId = new Map(
-    (Array.isArray(storedAccounts) ? storedAccounts : [])
-      .filter((account) => validIds.has(String(account?.userId || "")))
-      .map((account) => [String(account.userId), account]),
-  );
-  let accountsChanged = !Array.isArray(storedAccounts) || byId.size !== (storedAccounts || []).length;
-  for (const user of safeUsers) {
-    if (!byId.has(String(user.id))) {
-      byId.set(String(user.id), accountRecord(user));
-      accountsChanged = true;
-    }
-  }
-  if (accountsChanged) await atomicWriteJson(accountsFile, [...byId.values()]);
-
-  const storedFriendships = await readJsonFile(friendshipsFile, []);
-  const cleanFriendships = (Array.isArray(storedFriendships) ? storedFriendships : []).filter(
-    (item) =>
-      item?.id &&
-      validIds.has(String(item.requesterId)) &&
-      validIds.has(String(item.receiverId)) &&
-      String(item.requesterId) !== String(item.receiverId) &&
-      ["pending", "accepted"].includes(item.status),
-  );
-  if (!Array.isArray(storedFriendships) || cleanFriendships.length !== storedFriendships.length)
-    await atomicWriteJson(friendshipsFile, cleanFriendships);
-}
-
-async function sessionSecret() {
-  await ensureDataDirs();
-  return (await fsp.readFile(sessionSecretFile, "utf8")).trim();
-}
+function sessionSecret() { return signingSecret; }
 
 async function readBody(req, maxBytes = 8 * 1024 * 1024) {
   const chunks = [];
@@ -543,9 +375,9 @@ async function authApi(req, res, url) {
       auth.push(authRecord(created, passwordHash));
       users.push(created);
       accounts.push(createdAccount);
-      await atomicWriteJson(authFile, auth);
-      await atomicWriteJson(usersFile, users);
-      await atomicWriteJson(accountsFile, accounts);
+      await writeRecords(authFile, auth);
+      await writeRecords(usersFile, users);
+      await writeRecords(accountsFile, accounts);
       return { user: created, account: createdAccount };
     });
 
@@ -615,7 +447,7 @@ async function accountApi(req, res, url) {
       const next = accountRecord(user, nextData);
       if (index >= 0) accounts[index] = next;
       else accounts.push(next);
-      await atomicWriteJson(accountsFile, accounts);
+      await writeRecords(accountsFile, accounts);
       return next;
     });
     json(res, 200, { ok: true, account: { ...account, username: user.username } });
@@ -643,7 +475,7 @@ async function accountApi(req, res, url) {
         throw error;
       }
       auth[index] = authRecord(user, await hashPassword(newPassword));
-      await atomicWriteJson(authFile, auth);
+      await writeRecords(authFile, auth);
     });
     json(res, 200, { ok: true });
     return true;
@@ -775,7 +607,7 @@ async function socialApi(req, res, url) {
         acceptedAt: null,
       };
       all.push(created);
-      await atomicWriteJson(friendshipsFile, all);
+      await writeRecords(friendshipsFile, all);
       return created;
     });
     json(res, 201, { ok: true, friendship: relation });
@@ -813,7 +645,7 @@ async function socialApi(req, res, url) {
       } else {
         all.splice(index, 1);
       }
-      await atomicWriteJson(friendshipsFile, all);
+      await writeRecords(friendshipsFile, all);
     });
     json(res, 200, { ok: true });
     return true;
@@ -840,7 +672,7 @@ async function socialApi(req, res, url) {
         throw error;
       }
       all.splice(index, 1);
-      await atomicWriteJson(friendshipsFile, all);
+      await writeRecords(friendshipsFile, all);
     });
     json(res, 200, { ok: true });
     return true;
@@ -998,7 +830,7 @@ async function persistenceApi(req, res, url) {
     const dir = path.join(pageAssetsDir, ownerId);
     await fsp.mkdir(dir, { recursive: true });
     const assetId = `${randomUUID()}.${kind.ext}`;
-    await fsp.writeFile(path.join(dir, assetId), body);
+    await saveMedia(path.join(dir, assetId), "image", body);
     const originalName = path.basename(decodeHeader(req.headers["x-file-name"])).slice(0, 180);
     json(res, 201, {
       id: assetId,
@@ -1028,7 +860,15 @@ async function persistenceApi(req, res, url) {
       json(res, 404, { error: "Imagem não encontrada." });
       return true;
     }
-    await fsp.unlink(file);
+    const staged = file + ".pending-delete";
+    await fsp.rename(file, staged);
+    try {
+      await repository.query("DELETE FROM media_files WHERE path=$1", [path.relative(dataDir,file).split(path.sep).join("/")]);
+    } catch (error) {
+      await fsp.rename(staged,file);
+      throw error;
+    }
+    await fsp.unlink(staged);
     json(res, 200, { ok: true });
     return true;
   }
@@ -1059,7 +899,7 @@ async function persistenceApi(req, res, url) {
         const incoming = incomingById.get(String(existing.id));
         return incoming ? mergeUserData(existing, incoming) : existing;
       });
-      await atomicWriteJson(usersFile, next);
+      await writeRecords(usersFile, next);
       return next.length;
     });
     json(res, 200, { ok: true, count });
@@ -1094,7 +934,7 @@ async function persistenceApi(req, res, url) {
         throw error;
       }
       all[index] = mergeUserData(all[index], incoming);
-      await atomicWriteJson(usersFile, all);
+      await writeRecords(usersFile, all);
       return all[index];
     });
     json(res, 200, { ok: true, user: publicUser(savedUser, await readFriendshipsFile()) });
@@ -1117,7 +957,7 @@ async function persistenceApi(req, res, url) {
       return true;
     }
     const id = randomUUID();
-    await fsp.writeFile(path.join(audioDir, `${id}.mp3`), body);
+    await saveMedia(path.join(audioDir, `${id}.mp3`), "audio", body);
     const fileName = path.basename(requestedName).slice(0, 180) || "musica.mp3";
     json(res, 201, { fileId: `server:${id}`, fileName });
     return true;
@@ -1181,7 +1021,7 @@ const server = http.createServer(async (req, res) => {
     if (await musicProxy(req, res, url)) return;
 
     const pathname = decodeURIComponent(url.pathname);
-    if (pathname === "/data" || pathname.startsWith("/data/")) {
+    if (/(?:^|\/)(?:\.[^/]+|data|database|scripts|node_modules)(?:\/|$)/.test(pathname.replaceAll("\\", "/"))) {
       res.writeHead(403);
       res.end("Acesso negado");
       return;
@@ -1209,10 +1049,12 @@ const server = http.createServer(async (req, res) => {
     });
     fs.createReadStream(file).pipe(res);
   } catch (error) {
-    console.error(error);
-    const status = Number(error?.statusCode) || 400;
+    const databaseError = typeof error?.severity === "string" || /^(ECONN|ETIMEDOUT|EPIPE)/.test(error?.code || "");
+    if (databaseError) console.error("Erro de persistência:", error.code);
+    else console.error(error);
+    const status = Number(error?.statusCode) || (databaseError ? 503 : 400);
     if (!res.headersSent)
-      json(res, status, { error: error?.message || "Pedido inválido" });
+      json(res, status, { error: databaseError ? "Persistência temporariamente indisponível." : error?.message || "Pedido inválido" });
     else res.end();
   }
 });
