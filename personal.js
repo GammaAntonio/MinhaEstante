@@ -1,3 +1,5 @@
+import { stickerLayer, stickerCredits } from "./stickers.js";
+import { polaroid } from "./media-stage.js";
 import {
   h, link, panel, booksGrid, bookCard, empty, picture, stars, date, cover,
 } from "./ui.js";
@@ -23,7 +25,7 @@ export function renderPost(post, kind = "post", user = null) {
       " · ", date(post.date)),
     h("h3", {}, post.title),
     h("p", {}, post.text),
-    post.image && picture(post.image, post.title, "entry-image"),
+    post.image && (user?.isCreator ? polaroid(post.image, post.title) : picture(post.image, post.title, "entry-image")),
     post.bookIds?.length > 0 && h("div", { class: "tags" },
       post.bookIds.map((id) => {
         const b = getBook(id);
@@ -227,7 +229,7 @@ export function gadgetBody(g, user, media = "books", friendship = null) {
         g.text || "nada escrito aqui ainda. o espaço pelo menos está bonito.");
     case "image":
       return h("div", { class: "panel-body" },
-        picture(g.image, g.text || "Imagem da página", "entry-image") || "escolha uma imagem no editor.");
+        (user.isCreator ? polaroid(g.image, g.text || "Imagem da página") : picture(g.image, g.text || "Imagem da página", "entry-image")) || "escolha uma imagem no editor.");
     case "links": {
       const links = (Array.isArray(p.links) ? p.links : [])
         .filter((item) => item && typeof item === "object")
@@ -264,7 +266,7 @@ export function gadgetBody(g, user, media = "books", friendship = null) {
 }
 
 const albumGadgetNames = {
-  reading: "Ouvindo agora", shelves: "Meus álbuns", favorites: "Álbuns favoritos",
+  reading: "Álbuns na estante · Ouvindo", shelves: "Meus álbuns", favorites: "Álbuns favoritos",
   lists: "Listas de álbuns", reviews: "Resenhas musicais",
   month: "Álbum do mês", stats: "Estatísticas musicais",
 };
@@ -285,12 +287,16 @@ function friendsPanel(user) {
     link("ver todos", `#/amigos?user=${user.username}`));
 }
 
-export function renderSidebar(user, media = "books", friendship = null) {
+export function renderSidebar(user, media = "books", friendship = null, player = null, externalMusicSidebar = false) {
+  const gadgets = [...user.page.gadgets].sort((a, b) => a.position - b.position).filter(g => g.enabled);
+  const block = (g) => panel(media === "albums" ? albumGadgetNames[g.type] || GADGETS[g.type] : GADGETS[g.type],
+    gadgetBody(g, user, media, friendship));
+  const pinned = (g) => g.type === "about" || g.type === "reading";
   return h("aside", { class: "personal-sidebar" },
-    [...user.page.gadgets].sort((a, b) => a.position - b.position)
-      .filter((g) => g.enabled).map((g) =>
-        panel(media === "albums" ? albumGadgetNames[g.type] || GADGETS[g.type] : GADGETS[g.type],
-          gadgetBody(g, user, media, friendship))),
+    player && gadgets.filter(g => g.type === "about").map(block),
+    player,
+    player && gadgets.filter(g => g.type === "reading").map(block),
+    gadgets.filter(g => (!player && !externalMusicSidebar) || !pinned(g)).map(block),
     friendsPanel(user));
 }
 
@@ -376,18 +382,22 @@ export function renderPersonalHeader(user) {
 export function renderPersonalPage(user, { preview = false, media = "books", friendship = null } = {}) {
   const view = mediaUser(user, media);
   const c = view.page.customization;
+  const player = view.page.music?.enabled && (view.page.music.fileId || view.page.music.url)
+    ? panel("Ouvindo agora", h("div", { class: "personal-player profile-music-slot" },
+        preview && renderMusic(view.page.music, { artwork: view.page.avatar, subtitle: view.page.displayName })))
+    : null;
   return h("div", { class: `personal-wrap pattern-${c.backgroundPattern}`, style: themeStyle(view) },
     h("article", { class: "personal" },
-      renderPersonalHeader(view),
-      preview && renderMusic(user.page.music),
-      !preview && h("div", { class: "profile-music-slot" }),
+      h("div", { class: "personal-decoration-region" },
+        renderPersonalHeader(view), stickerLayer(view.page.stickers)),
       h("div", { class: "personal-topbar" },
         h("span", {}, "você está na página de ",
           userIdentity(user, { username: true, linkProfile: true }), ". tente não mexer em nada."),
         h("small", {}, media === "albums" ? "álbuns · faixas · resenhas" : "livros · textos · listas")),
       h("div", { class: `personal-layout ${c.sidebarPosition}` },
-        renderSidebar(view, media, friendship), renderWall(view, media)),
+        renderSidebar(view, media, friendship, player), renderWall(view, media)),
       h("footer", { class: "personal-footer" },
+        view.page.stickers?.length > 0 && stickerCredits(view.page.stickers),
         "valeu pela visita. não sei como você chegou aqui. ",
         h("span", { "aria-hidden": "true" }, "✦"))));
 }

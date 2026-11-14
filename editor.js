@@ -1,3 +1,5 @@
+import { renderCreatorMusicEditor } from "./creator-playlist-editor.js";
+import { stickerEditor } from "./stickers.js";
 import { confirmAction } from "./ui.js";
 import {
   h,
@@ -196,6 +198,9 @@ export function renderEditor(user, initialMedia = "books") {
   ensureMediaPages(draft);
   activateVariant(draft, media);
   draft.music = { ...DEFAULT_MUSIC, ...draft.music };
+  const stickerHistory = Object.fromEntries(["books", "albums"].map(key => [key, {
+    initial: structuredClone(draft.mediaPages[key].stickers || []), undo: [], redo: [],
+  }]));
   let musicUploading = false;
   const otherMedia = () => (media === "books" ? "albums" : "books");
   const mediaName = (value = media) => (value === "albums" ? "Álbuns" : "Livros");
@@ -243,6 +248,7 @@ export function renderEditor(user, initialMedia = "books") {
     wall: "Mural",
     gadgets: "Gadgets",
     images: "Imagens",
+    stickers: "Adesivos",
     fonts: "Fontes",
     music: "Editar música",
     advanced: "Editar base",
@@ -269,6 +275,7 @@ export function renderEditor(user, initialMedia = "books") {
       u.page = saved;
     });
     await flushUserPersistence(user.id);
+    for (const key of ["books","albums"]) stickerHistory[key].initial = structuredClone(saved.mediaPages[key].stickers || []);
     notify(message);
     updateMode();
   }
@@ -675,7 +682,7 @@ export function renderEditor(user, initialMedia = "books") {
         ),
       );
     }
-    if (tab === "music") {
+    if (tab === "music" && !user.isCreator) {
       const music = draft.music;
       const upload = input("musicFile", "", {
         type: "file",
@@ -773,6 +780,10 @@ export function renderEditor(user, initialMedia = "books") {
         ),
       );
     }
+    if (tab === "music" && user.isCreator) {
+      renderCreatorMusicEditor({ user, draft, body, setUploading: value => { musicUploading = value; } });
+    }
+    if (tab === "stickers") body.append(stickerEditor(draft, stickerHistory[media]));
     if (tab === "advanced") renderAdvanced();
   }
 

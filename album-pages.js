@@ -1,3 +1,4 @@
+import { mediaBrowser } from "./media-stage.js";
 import {
   h,
   link,
@@ -14,6 +15,7 @@ import {
   empty,
   bookCard,
   cover,
+  picture,
   stars,
   date,
   confirmAction,
@@ -140,10 +142,19 @@ export function albumCatalogPage(query, active) {
     link("listas de álbuns", "#/listas?media=albums"),
   );
   if (!q) {
+    const cached = Object.values(albumCatalog());
+    const genres = [...new Set(cached.flatMap((album) => album.genres || []))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    const genre = query.get("genero");
+    const filtered = genre ? cached.filter((album) => album.genres?.includes(genre)) : cached;
+    if (genres.length) {
+      const filter = select("genero", { "": "Todos os gêneros", ...Object.fromEntries(genres.map((name) => [name, name])) }, genre || "");
+      filter.addEventListener("change", () => navigate(filter.value ? `/albuns?genero=${encodeURIComponent(filter.value)}` : "/albuns"));
+      results.append(field("Gênero nos álbuns consultados", filter));
+    }
     results.append(
       panel(
         "álbuns já consultados",
-        albumGrid(Object.values(albumCatalog()), currentUser()),
+        mediaBrowser(filtered, albumGrid(filtered, currentUser())),
       ),
     );
     return root;
@@ -155,7 +166,7 @@ export function albumCatalogPage(query, active) {
       status.textContent =
         result.warning ||
         `${result.total} resultados · ${result.source === "musicbrainz" ? "MusicBrainz" : result.source === "itunes" ? "iTunes (fallback)" : "cache local"}`;
-      results.replaceChildren(albumGrid(result.albums));
+      results.replaceChildren(mediaBrowser(result.albums, albumGrid(result.albums)));
       if (result.source === "musicbrainz" && result.total > 20)
         results.append(
           h(
@@ -451,6 +462,7 @@ export function albumPage(id, query, active, { embedded = false } = {}) {
     message,
     content,
   );
+  let playerAlbum;
   const updateAudio = (autoplay = false) => {
     const liveUser =
       (profileUser?.username && userByName(profileUser.username)) ||
@@ -462,14 +474,13 @@ export function albumPage(id, query, active, { embedded = false } = {}) {
       renderMusic(
         {
           ...savedAudio,
-          title: "Música deste álbum",
+          title: playerAlbum?.title || "Música deste álbum",
           loop: false,
         },
-        { kind: "album", autoplay },
+        { kind: "album", autoplay, artwork: playerAlbum?.coverUrl, subtitle: playerAlbum?.authors?.join(", ") },
       ) || "",
     );
   };
-  updateAudio(true);
 
   function ratingWidget(album, track, onSaved) {
     const liveUser = profileUser?.username ? userByName(profileUser.username) : currentUser();
@@ -500,6 +511,19 @@ export function albumPage(id, query, active, { embedded = false } = {}) {
       tracks: Array.isArray(rawAlbum?.tracks) ? rawAlbum.tracks : [],
       releases: Array.isArray(rawAlbum?.releases) ? rawAlbum.releases : [],
     };
+    playerAlbum = album;
+    const playerTitle = audioHost.querySelector(".music-title");
+    if (playerTitle) playerTitle.textContent = album.title || "Música deste álbum";
+    const artist = audioHost.querySelector(".music-artist");
+    if (artist) artist.textContent = album.authors?.join(", ") || "";
+    if (album.coverUrl) {
+      const art = audioHost.querySelector(".music-art");
+      const image = picture(album.coverUrl, "", "music-cover");
+      if (art && image && art.querySelector("img")?.src !== image.src) {
+        art.querySelector("img")?.remove();
+        art.append(image);
+      }
+    }
     const liveUser = profileUser?.username
       ? userByName(profileUser.username)
       : currentUser();
@@ -680,6 +704,8 @@ export function albumPage(id, query, active, { embedded = false } = {}) {
     );
   }
   const cached = resolveAlbum(profileUser, id) || getAlbum(id);
+  playerAlbum = cached;
+  updateAudio(true);
   if (cached) draw(cached);
   MusicBrainzService.detail(id)
     .then((album) => {

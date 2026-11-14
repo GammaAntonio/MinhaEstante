@@ -1,3 +1,5 @@
+import { MAX_CREATOR_TRACKS } from "./creator-playlist.js";
+import { cleanStickers } from "./sticker-data.js";
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -400,9 +402,21 @@ function publicUsers(users, friendships = []) {
 
 function mergeUserData(existing, incoming) {
   const clean = sanitizeUser(incoming);
+  const tracks = clean.page?.music?.tracks;
+  if (tracks !== undefined) {
+    if (String(existing.id) !== creatorUserId) {
+      throw Object.assign(new Error("Playlist exclusiva do Creator."), { statusCode: 403 });
+    }
+    if (!Array.isArray(tracks) || tracks.length > MAX_CREATOR_TRACKS) {
+      throw Object.assign(new Error("Limite de 20 músicas."), { statusCode: 400 });
+    }
+  }
   delete clean.isCreator;
   delete clean.creator;
   delete clean.creatorBadge;
+  for (const page of [clean.page, clean.page?.mediaPages?.books, clean.page?.mediaPages?.albums]) {
+    if (page && "stickers" in page) page.stickers = cleanStickers(page.stickers);
+  }
   return {
     ...clean,
     id: existing.id,
@@ -1121,13 +1135,33 @@ async function persistenceApi(req, res, url) {
       json(res, 404, { error: "MP3 não encontrado." });
       return true;
     }
-    res.writeHead(200, {
+    const { size } = await fsp.stat(file);
+    const headers = {
       "Content-Type": "audio/mpeg",
-      "Content-Length": fs.statSync(file).size,
+      "Content-Length": size,
       "Cache-Control": "private, max-age=3600",
       "X-Content-Type-Options": "nosniff",
-    });
-    fs.createReadStream(file).pipe(res);
+      "Accept-Ranges": "bytes",
+    };
+    let range;
+    if (req.headers.range) {
+      const match = /^bytes=(\d*)-(\d*)$/i.exec(req.headers.range);
+      const start = match?.[1] ? Number(match[1]) : Math.max(0, size - Number(match?.[2]));
+      const end = match?.[1] && match[2] ? Math.min(size - 1, Number(match[2])) : size - 1;
+      if (!match || (!match[1] && !match[2]) || !Number.isSafeInteger(start) || start >= size || end < start) {
+        res.writeHead(416, { "Content-Range": "bytes */" + size, "Accept-Ranges": "bytes" });
+        res.end();
+        return true;
+      }
+      range = { start, end };
+      headers["Content-Length"] = end - start + 1;
+      headers["Content-Range"] = "bytes " + start + "-" + end + "/" + size;
+    }
+    res.writeHead(range ? 206 : 200, headers);
+    const stream = fs.createReadStream(file, range);
+    stream.on("error", () => res.destroy());
+    res.on("close", () => stream.destroy());
+    stream.pipe(res);
     return true;
   }
 

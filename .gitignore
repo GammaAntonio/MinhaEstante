@@ -13,3 +13,10 @@ obj/
 
 # Todos os dados privados e mutáveis do servidor
 data/
+# Credenciais e mídia privada
+*.key
+*.pem
+*.ppk
+*.mp3
+*.bak
+*.bak-*

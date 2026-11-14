@@ -1,3 +1,4 @@
+import { cleanStickers } from "./sticker-data.js";
 const VARIANT_FIELDS = [
   'title',
   'subtitle',
@@ -9,13 +10,14 @@ const VARIANT_FIELDS = [
   'customization',
   'gadgets',
   'badges',
+  'stickers',
   'customCode',
 ];
 
 const clone = (value) => structuredClone(value);
 
 function capture(page) {
-  return Object.fromEntries(VARIANT_FIELDS.map((key) => [key, clone(page[key])]));
+  return Object.fromEntries(VARIANT_FIELDS.map((key) => [key, key === 'stickers' ? cleanStickers(page[key]) : clone(page[key])]));
 }
 
 export function ensureMediaPages(page) {
@@ -114,6 +116,7 @@ export function copyVariantSection(page, from, to, section = 'all') {
     for (const key of ['wallStyle', 'reviewStyle', 'wallContent'])
       target.customization[key] = clone(source.customization[key]);
   } else if (section === 'gadgets') copy('gadgets');
+  else if (section === 'stickers') copy('stickers');
   else if (section === 'advanced') copy('customCode');
   else if (section === 'music') return target;
   else {

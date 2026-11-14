@@ -1,3 +1,7 @@
+import { animateNavigation } from "./navigation-motion.js";
+import { userAlbums } from "./album-store.js";
+import { mediaBrowser } from "./media-stage.js";
+import { mediaChannels, shelfWidget, mediaIcon } from "./media-hub.js";
 import { confirmAction } from "./ui.js";
 import { SITE_CONFIG } from "./config.js";
 import { STATUS, SEED_BOOKS } from "./data.js";
@@ -94,33 +98,36 @@ function renderHeader(route) {
   const nav = [
     ["home", "/home"],
     ["livros", "/livros"],
-    ["pessoas", "/usuarios"],
     ["álbuns", "/albuns"],
+    ["pessoas", "/usuarios"],
+    ["minha página", user ? `/pagina/${user.username}` : "/login"],
     ["listas", musical ? "/listas?media=albums" : "/listas"],
     ["diário", "/diario"],
     ["resenhas", musical ? "/resenhas?media=albums" : "/resenhas"],
-    ["minha página", user ? `/pagina/${user.username}${musical ? "?media=albums" : ""}` : "/login"],
   ];
   if (user) nav.push(["amigos", "/amigos"]);
   if (user?.role === "admin") nav.push(["admin", "/admin"]);
-  return [
-    h("div", { class: "topline" },
-      "os livros são os mesmos. pelo menos a página você estraga do seu jeito.",
-      h("span", {}, "surpreendentemente ainda funcionando")),
-    h("header", { class: "site-header" },
-      link([
-        h("span", {}, "www."),
-        h("strong", {}, SITE_CONFIG.name),
-        h("span", {}, ".com"),
-      ], "#/home", { class: "brand" }),
-      h("p", { class: "tagline" }, SITE_CONFIG.tagline),
-      h("div", { class: "header-stamp" }, "páginas pessoais", h("br"), "desde agora.")),
-    h("nav", { class: "navbar", "aria-label": "Navegação principal" },
-      nav.map(([label, path]) => link(label, "#" + path, {
-        class: route.parts[0] === path.split("/")[1] ? "active" : "",
-      })),
-      global),
-    h("div", { class: "session" },
+  const links = nav.map(([label, path]) => {
+    const selected = label === "minha página"
+      ? route.parts[0] === (user ? "pagina" : "login") && (!user || route.parts[1] === user.username)
+      : route.parts[0] === path.split("?")[0].slice(1);
+    const icon = { livros: "books", álbuns: "records", pessoas: "people" }[label];
+    return link([icon && mediaIcon(icon), label], "#" + path, {
+      class: selected ? "active" : "",
+      "aria-current": selected ? "page" : null,
+    });
+  });
+  const extras = h("details", { class: "nav-extras" },
+      h("summary", {}, "Mais canais"), h("div", { class: "nav-drawer" }, links.slice(5)));
+  extras.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !extras.open) return;
+      extras.open = false;
+      extras.querySelector("summary").focus();
+    });
+  extras.addEventListener("focusout", (event) => {
+      if (!extras.contains(event.relatedTarget)) extras.open = false;
+    });
+  const session = h("div", { class: "session" },
       user ? [
         h("span", {}, "olá, ", userIdentity(user, { linkProfile: true }), "."),
         link("editar minha página", `#/pagina/${user.username}/editar`),
@@ -129,7 +136,19 @@ function renderHeader(route) {
           Store.logout();
           navigate("/login");
         }),
-      ] : [link("entrar", "#/login"), link("criar página", "#/criar-pagina")]),
+      ] : [link("entrar", "#/login"), link("criar página", "#/criar-pagina")]);
+  return [
+    h("header", { class: "site-header" },
+      link([
+        h("span", {}, "www."),
+        h("strong", {}, SITE_CONFIG.name),
+        h("span", {}, ".com"),
+      ], "#/home", { class: "brand" }),
+      h("p", { class: "tagline" }, SITE_CONFIG.tagline),
+      session),
+    h("nav", { class: "navbar", "aria-label": "Navegação principal" },
+      links.slice(0, 5), extras,
+      global),
   ];
 }
 
@@ -161,15 +180,73 @@ function sideMenu(user) {
             userIdentity(u, { username: true, linkProfile: true }))))));
 }
 
+function homeShelf(books, ratings) {
+  const items = books.slice(0, 6);
+  const shelf = booksGrid(items, ratings);
+  const inspector = h("section", { class: "shelf-inspector", "aria-label": "Ficha da estante" });
+  const inspect = (book, selected) => {
+    const author = book.authors?.join(", ");
+    const facts = [
+      author && ["Autoria", author],
+      book.firstPublishYear && ["Primeira publicação", book.firstPublishYear],
+      book.languages?.length && ["Idiomas", book.languages.slice(0, 4).join(", ")],
+    ].filter(Boolean);
+    inspector.replaceChildren(
+      h("h2", {}, "Ficha da estante"),
+      h("h3", {}, book.title),
+      h("dl", {}, facts.map(([term, value]) => [h("dt", {}, term), h("dd", {}, value)])),
+      link("Abrir ficha completa →", `#/livro/${encodeURIComponent(book.id)}`));
+    shelf.querySelectorAll(".book-card").forEach((card) => card.classList.toggle("shelf-selected", card === selected));
+  };
+  if (items.length) {
+    const cards = [...shelf.querySelectorAll(".book-card")];
+    cards.forEach((card, index) => {
+      const select = () => inspect(items[index], card);
+      card.addEventListener("focusin", select);
+      card.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "mouse") select();
+      });
+    });
+    inspect(items[0], cards[0]);
+  }
+  return { shelf, inspector: items.length ? inspector : null };
+}
+
+function homeHub(user, books, inspect = false) {
+  const authors = [...new Set(books.flatMap((book) => book.authors || []))].slice(0, 5);
+  const { shelf, inspector } = homeShelf(books, user?.ratings);
+  return h("div", { class: "home-hub" },
+    h("aside", { class: "hub-index" }, h("h2", {}, "Departamentos"), mediaChannels(),
+      authors.length > 0 && h("div", { class: "author-index" }, h("h2", {}, "Autores na estante"),
+        authors.map((author) => link(author, `#/livros?type=author&q=${encodeURIComponent(author)}`)))),
+    h("section", { class: "hub-console" },
+      h("div", { class: "hub-intro" },
+        h("h1", {}, user ? "Minha biblioteca" : "Biblioteca & discoteca"),
+        !inspect && link(user ? "Visitar minha página" : "Criar minha página",
+          user ? `#/pagina/${user.username}` : "#/criar-pagina", { class: "hub-profile" })),
+      searchForm(),
+      h("section", { class: "editorial-shelf" },
+        h("div", { class: "editorial-rule" },
+          h("h2", {}, user ? "Na minha estante" : "Livros em destaque"),
+          link("Catálogo de livros →", "#/livros")),
+        shelf,
+        shelfWidget(books))),
+    h("aside", { class: "hub-sidebar", "aria-label": "Ficha e reprodução" },
+      inspector,
+      h("section", { class: "listening-index" }, h("h2", {}, "Discoteca"),
+        link("Procurar álbuns e artistas", "#/albuns"),
+        link("Abrir coleção de álbuns", "#/colecao-albuns"),
+        link("Listas de álbuns", "#/listas?media=albums"),
+        user && userAlbums(user, (entry) => entry.status === "ouvindo").slice(0, 4).map(album =>
+          link(album.title, `#/album/${encodeURIComponent(album.id)}?user=${encodeURIComponent(user.username)}`)))));
+}
+
 function home(user, { inspect = false } = {}) {
   const featuredAuthor = Store.userByName("antonio");
   const featuredPost = featuredAuthor?.posts?.[0];
   if (!user) {
-    return h("div", {},
-      heading("mesmos livros. decisões estéticas questionáveis.",
-        "procure livros, marque o que leu e monte sua página.",
-        link("criar minha página", "#/criar-pagina", { class: "button primary" })),
-      searchForm(),
+    return h("div", { class: "home-view" },
+      homeHub(null, Object.values(Store.catalog()).slice(0, 9)),
       h("div", { class: "two-column" },
         h("aside", {},
           panel("visite uma página",
@@ -177,23 +254,18 @@ function home(user, { inspect = false } = {}) {
               Store.users().filter((u) => u.role !== "admin").map((u) =>
                 h("li", {}, link(u.page.title, `#/pagina/${u.username}`), " ",
                   userIdentity(u, { username: true, linkProfile: true }))))),
-          panel("bem-vindo de volta",
-            h("div", { class: "panel-body" },
-              link("entrar na minha página", "#/login", { class: "button primary" })))),
+          null),
         h("div", {},
-          panel("livros", booksGrid(Object.values(Store.catalog()).slice(0, 6))),
           panel("textos",
             h("div", { class: "panel-body" },
               featuredPost ? renderPost(featuredPost, "post", featuredAuthor) :
-                empty("nada. absolutamente nada."))))));
+                h("p", { class: "quiet-empty" }, "Nenhum texto publicado."))))));
   }
-  return h("div", {},
+  return h("div", { class: "home-view" },
     inspect && h("div", { class: "inspect-banner" },
       `Visualizando a home de ${user.page.displayName}. Sua sessão continua como administrador; visualização somente leitura.`,
       link(" voltar ao admin", "#/admin")),
-    heading(`olá, ${user.page.displayName.toLowerCase()}.`, "sua página está logo ali.",
-      link("visitar minha página", `#/pagina/${user.username}`, { class: "button" })),
-    searchForm(),
+    homeHub(user, userBooks(user).slice(0, 9), inspect),
     h("div", { class: "two-column" },
       sideMenu(user),
       h("div", {},
@@ -381,13 +453,10 @@ function catalogPage(query, active) {
     catalogModes("books"), searchForm(q, type), status, results);
   if (!q) {
     const recent = Store.read(Store.KEYS.recent, []);
+    const featured = Object.values(Store.catalog()).slice(0, 18);
     results.append(
-      panel("consultados recentemente", recent.length ? booksGrid(getBooks(recent)) :
-        empty("nenhum livro por aqui ainda. situação temporária, espero.",
-          "Busque por título, autor ou ISBN.")),
-      panel("explorar a estante", booksGrid(Object.values(Store.catalog()).slice(0, 18))),
-      h("p", { class: "muted" },
-        "Os dados de demonstração ficam disponíveis sem conexão. Buscas novas consultam a Open Library."));
+      ...(recent.length ? [panel("consultados recentemente", booksGrid(getBooks(recent)))] : []),
+      panel("Explorar a estante", mediaBrowser(featured, booksGrid(featured))));
     return container;
   }
   status.textContent = "buscando na Open Library…";
@@ -397,7 +466,7 @@ function catalogPage(query, active) {
       if (!active()) return;
       status.textContent = result.warning ||
         `${result.total.toLocaleString("pt-BR")} obras encontradas · ${result.source === "google" ? "Google Books" : "Open Library"}`;
-      results.replaceChildren(result.books.length ? booksGrid(result.books) :
+      results.replaceChildren(result.books.length ? mediaBrowser(result.books, booksGrid(result.books)) :
         empty("nada. absolutamente nada.", "Tente outro título, autor ou ISBN."));
       if (result.source !== "local" && result.total > SITE_CONFIG.pageSize) {
         const pagination = h("div", { class: "pagination" });
@@ -491,7 +560,7 @@ function bookPage(id, active, { embedded = false } = {}) {
           h("dt", {}, "editoras"), h("dd", {}, book.publishers.slice(0, 3).join(", ")),
         ]),
       h("p", { class: "muted" }, book.source === "local" ?
-        "metadados mínimos da demonstração" :
+        "registro disponível no acervo local" :
         `fonte: ${book.source === "google" ? "Google Books" : "Open Library"} · ${book.editionCount || "várias"} edições`));
     if (loading) details.append(h("p", { class: "loading" }, "consultando descrição e edições…"));
     const me = Store.currentUser();
@@ -1059,8 +1128,6 @@ function adminPage(query) {
       }), "danger"))));
   return h("div", {},
     heading("administração", "contas e números deste navegador. sem interferir nas páginas."),
-    h("p", { class: "notice" },
-      "As permissões desta demonstração são verificadas apenas no cliente. Um backend será necessário para autenticação e autorização reais."),
     h("div", { class: "toolbar" }, [
       [all.length, "usuários"], [sum("library"), "livros nas bibliotecas"],
       [sum("ratings"), "avaliações"], [sum("reviews"), "resenhas"],
@@ -1074,8 +1141,10 @@ function adminPage(query) {
 }
 
 async function render(route, active) {
-  setBackgroundMusic((route.parts[0] === "pagina" ?
-    Store.userByName(route.parts[1]) : Store.userByName(route.query.get("user"))) || Store.currentUser());
+  const [name = "home", id, action] = route.parts;
+  const profile = (name === "pagina" ? Store.userByName(id) : Store.userByName(route.query.get("user"))) ||
+    Store.currentUser();
+  setBackgroundMusic(name === "pagina" && !action ? profile : null);
   const main = h("main", { id: "main", class: "page-content", tabindex: "-1" });
   const site = h("div", { class: "site" }, renderHeader(route), main,
     h("footer", { class: "site-footer" },
@@ -1089,7 +1158,6 @@ async function render(route, active) {
           "aria-label": "Creator verificado", title: "Creator",
         }, "✓"))));
   app.replaceChildren(site);
-  const [name = "home", id, action] = route.parts;
   let content;
   try {
     switch (name) {
@@ -1199,6 +1267,8 @@ async function render(route, active) {
       positionBackgroundMusic(site);
       document.title = `${name === "pagina" ? Store.userByName(id)?.page.title || "Página" : name === "livro" ? Store.getBook(id)?.title || "Livro" : name === "albuns" ? "Álbuns" : name === "livros" ? "Livros" : name} · ${SITE_CONFIG.name}`;
       window.scrollTo(0, 0);
+      animateNavigation(main, name, name === "pagina" ? `${id}${action || ""}${route.query.get("media") || ""}` : name);
+
     }
   } catch (e) {
     if (active()) main.replaceChildren(h("div", { class: "error-box" },

@@ -218,6 +218,8 @@ export function bookCard(book, { rating = null, small = false } = {}) {
         { class: mediaType === "album" ? "muted album-artist" : "muted" },
         book.authors?.join(", ") || "Autor não informado",
       ),
+      book.type !== "album" && book.firstPublishYear &&
+        h("small", { class: "catalog-year" }, book.firstPublishYear),
       book.type === "album" &&
         h(
           "small",
@@ -261,14 +263,16 @@ export const date = (value) =>
     month: "short",
     year: "numeric",
   }).format(new Date(value));
+let modalId = 0;
 export function modal(title, body, options = {}) {
+  const titleId = `dialog-title-${++modalId}`;
   const d = h(
     "dialog",
-    { class: options.class || "" },
+    { class: options.class || "", "aria-labelledby": titleId },
     h(
       "div",
       { class: "dialog-head" },
-      h("h2", {}, title),
+      h("h2", { id: titleId }, title),
       button("fechar ×", () => d.close()),
     ),
     body,

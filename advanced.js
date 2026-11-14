@@ -1,8 +1,11 @@
+import { stickerLayer, stickerCredits } from "./stickers.js";
+import { polaroid } from "./media-stage.js";
 import { h, notify } from "./ui.js";
 import { renderMusic } from "./music.js";
 import { renderAlbumSections, albumGrid } from "./album-pages.js";
 import {
   renderPersonalHeader,
+  gadgetBody,
   renderSidebar,
   renderWall,
   renderPost,
@@ -173,7 +176,7 @@ export const rawCode = () => ({
   css: "body { background: #ece9e5; color: #222; font-family: Georgia, serif; }\n.custom-page { max-width: 850px; margin: 30px auto; padding: 20px; }",
   javascript: "",
 });
-function presentationTokens(user, friendship = null) {
+function presentationTokens(user, friendship = null, externalMusicSidebar = false) {
   const data = publicPageData(user),
     c = user.page.customization,
     media = user.page._media || "books";
@@ -213,7 +216,7 @@ function presentationTokens(user, friendship = null) {
       recentReviews: reviews(),
       activity: renderActivity(user.activity, user.username).outerHTML,
       content: renderWall(user, media).outerHTML,
-      defaultSidebar: renderSidebar(user, media, friendship).innerHTML,
+      defaultSidebar: renderSidebar(user, media, friendship, null, externalMusicSidebar).innerHTML,
     },
   };
 }
@@ -413,13 +416,13 @@ export function migrateBaseCode(
   return next;
 }
 
-export async function advancedDocument(user, code, nonce, { friendship = null } = {}) {
+export async function advancedDocument(user, code, nonce, { friendship = null, externalMusicSidebar = false } = {}) {
   const media = user.page._media || "books";
   const effectiveCode =
     code?.mode === "raw"
       ? structuredClone(code)
       : migrateBaseCode(code, user, media);
-  const tokens = presentationTokens(user, friendship);
+  const tokens = presentationTokens(user, friendship, externalMusicSidebar);
   const sections = effectiveCode.sections || {};
   function expand(html, depth = 0) {
     if (depth > 7) return "<p>Referência circular no template.</p>";
@@ -503,7 +506,15 @@ export async function advancedFrame(user, code, { preview = false, friendship = 
         : "Página pessoal em ambiente isolado",
       referrerpolicy: "no-referrer",
     });
-  frame.srcdoc = await advancedDocument(user, code, nonce, { friendship });
+  const music = user.page.music;
+  const hasPlayer = !!(music?.enabled && (music.fileId || music.url));
+  const externalMusicSidebar = hasPlayer && code.mode === "base";
+  const media = user.page._media || "books";
+  const gadget = (type, title) => {
+    const config = user.page.gadgets.find(item => item.type === type && item.enabled);
+    return config && panel(title, gadgetBody(config, user, media, friendship));
+  };
+  frame.srcdoc = await advancedDocument(user, code, nonce, { friendship, externalMusicSidebar });
   let errors = 0;
   const listener = (e) => {
     if (
@@ -555,8 +566,19 @@ export async function advancedFrame(user, code, { preview = false, friendship = 
   return h(
     "div",
     { class: "advanced-personal" },
-    preview && renderMusic(user.page.music),
-    !preview && h("div", { class: "profile-music-slot" }),
-    frame,
+    h("div", { class: "advanced-profile-layout" },
+      hasPlayer && h("aside", { class: "advanced-profile-player personal", style: themeStyle(user) },
+        externalMusicSidebar && gadget("about", "Sobre mim"),
+        panel("Ouvindo agora", h("div", { class: "personal-player profile-music-slot" },
+          preview && renderMusic(music, { artwork: user.page.avatar, subtitle: user.page.displayName }))),
+        externalMusicSidebar && gadget("reading", media === "albums" ? "Álbuns na estante · Ouvindo" : "Lendo agora")),
+      h("div", { class: "advanced-profile-content" },
+        user.page.stickers?.length > 0 && h("div", { class: "advanced-decoration-region" }, stickerLayer(user.page.stickers)),
+        frame,
+        user.isCreator && (user.page._media !== "albums") && user.page.gadgets
+          .filter(g => g.enabled && g.type === "image" && g.image)
+          .map(g => polaroid(g.image, g.text || "Imagem da página")),
+        user.page.stickers?.length > 0 && stickerCredits(user.page.stickers))),
+
   );
 }
