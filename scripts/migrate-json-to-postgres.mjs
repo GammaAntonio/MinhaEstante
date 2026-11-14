@@ -39,6 +39,14 @@ try{
  await db.transaction(async()=>{
   const installed=await db.query("SELECT to_regclass('public.app_state') AS table_name");
   if(!installed.rows[0].table_name) await db.query(await readFile(new URL("../database/migrations/001-initial.sql",import.meta.url),"utf8"));
+  const schema=await db.query("SELECT to_regclass('public.catalog_snapshots') AS normalized");
+  if (!schema.rows[0].normalized) {
+    if (verify) throw Error("Migration 002 pendente");
+    const legacy=await db.readUsers({legacy:true});
+    await db.query(await readFile(new URL("../database/migrations/002-normalized-catalog.sql",import.meta.url),"utf8"));
+    for (const [index,user] of legacy.entries()) await db.saveUser(user,index);
+    if(!isDeepStrictEqual(await db.read("users"),legacy)) throw Error("Divergência na atualização do esquema");
+  }
   const {rows}=await db.query("SELECT session_secret, creator_id FROM app_state");
   if(!rows.length && !verify){
    for(const kind of kinds) await db.write(kind,source[kind]);

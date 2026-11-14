@@ -77,6 +77,7 @@ async function ensureDataDirs() {
   dataReadyPromise ??= (async () => {
     const { rows } = await repository.query("SELECT session_secret,creator_id FROM app_state");
     if (!rows.length) throw Error("Banco não inicializado. Execute a migração.");
+    await repository.query("SELECT 1 FROM catalog_snapshots LIMIT 0");
     signingSecret = rows[0].session_secret;
     creatorUserId = rows[0].creator_id;
     await fsp.mkdir(audioDir, {recursive:true});

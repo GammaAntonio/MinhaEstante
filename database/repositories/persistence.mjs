@@ -1,3 +1,4 @@
+import { saveSnapshot, listField, snapshotSQL, hydrateSnapshots } from "./catalog.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import pg from "pg";
@@ -54,7 +55,7 @@ export function createRepository() {
     }
     await query("INSERT INTO users VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET username=excluded.username,role=excluded.role,ordinal=excluded.ordinal,metadata=excluded.metadata",
       [user.id,user.username,user.role ?? null,ordinal,JSON.stringify(core)]);
-    for (const table of ["profiles","library_entries","album_entries","user_records"])
+    for (const table of ["profiles","library_entries","album_entries","user_records","catalog_snapshots"])
       await query(`DELETE FROM ${table} WHERE user_id=$1`,[user.id]);
     for (const [media,profile] of profiles)
       await query("INSERT INTO profiles VALUES ($1,$2,$3)",[user.id,media,JSON.stringify(profile)]);
@@ -65,20 +66,34 @@ export function createRepository() {
           const id = book ? value?.bookId : value?.albumId;
           if (typeof id !== "string" || !id) throw Error("Entrada de coleção sem identificador válido");
           await query(`INSERT INTO ${book ? "works" : "albums"} VALUES ($1) ON CONFLICT DO NOTHING`,[id]);
-          await query(`INSERT INTO ${book ? "library_entries" : "album_entries"} VALUES ($1,$2,$3,$4)`,[user.id,index,id,JSON.stringify(value)]);
+          const metadata={...value};
+          const property=book ? "book" : "album";
+          if(await saveSnapshot(query,[user.id,category,key],value[property])) delete metadata[property];
+          await query(`INSERT INTO ${book ? "library_entries" : "album_entries"} VALUES ($1,$2,$3,$4)`,[user.id,index,id,JSON.stringify(metadata)]);
         } else {
-          await query("INSERT INTO user_records VALUES ($1,$2,$3,$4,$5)",[user.id,category,key,index,JSON.stringify(value)]);
+          if(category==="album_snapshots" && await saveSnapshot(query,[user.id,category,key],value)) continue;
+          const field=listField(category);
+          const items=field && value?.[field];
+          const metadata=Array.isArray(items) ? {...value,[field]:[]} : value;
+          await query("INSERT INTO user_records VALUES ($1,$2,$3,$4,$5)",[user.id,category,key,index,JSON.stringify(metadata)]);
+          if(Array.isArray(items)) for(const [ordinal,item] of items.entries()){
+            if(typeof item!=="string" || !item) throw Error("Item de lista sem identificador válido");
+            const book=category==="lists";
+            await query("INSERT INTO "+(book?"works":"albums")+" VALUES($1) ON CONFLICT DO NOTHING",[item]);
+            await query("INSERT INTO list_items VALUES($1,$2,$3,$4,$5,$6)",[user.id,category,key,ordinal,book?item:null,book?null:item]);
+          }
         }
       }
     }
   }
-  async function readUsers() {
+  async function readUsers({ legacy = false } = {}) {
     // One statement gives every collection the same PostgreSQL snapshot.
     const {rows} = await query(`SELECT u.id,u.username,u.role,u.metadata,
       (SELECT jsonb_object_agg(media,configuration) FROM profiles WHERE user_id=u.id) AS profiles,
       (SELECT jsonb_agg(metadata ORDER BY ordinal) FROM library_entries WHERE user_id=u.id) AS books,
       (SELECT jsonb_agg(metadata ORDER BY ordinal) FROM album_entries WHERE user_id=u.id) AS albums,
-      (SELECT jsonb_agg(jsonb_build_array(category,record_key,metadata) ORDER BY ordinal) FROM user_records WHERE user_id=u.id) AS records
+      (SELECT jsonb_agg(jsonb_build_array(category,record_key,metadata${legacy ? "" : ", (SELECT jsonb_agg(coalesce(work_id,album_id) ORDER BY li.ordinal) FROM list_items li WHERE (li.user_id,li.category,li.record_key)=(r.user_id,r.category,r.record_key))"}) ORDER BY ordinal) FROM user_records r WHERE user_id=u.id) AS records,
+      ${legacy ? "NULL AS snapshots" : snapshotSQL}
       FROM users u ORDER BY ordinal`);
     return rows.map(row => {
       const user={...row.metadata,id:row.id,username:row.username};
@@ -94,10 +109,12 @@ export function createRepository() {
       }
       if(row.books) user.library=row.books;
       if(row.albums) user.albums.library=row.albums;
-      for(const [category,key,value] of row.records || []) {
+      for(const [category,key,value,items] of row.records || []) {
         const [host,property]=slot(user,category);
+        if(items) value[listField(category)]=items;
         Object.defineProperty(host[property],key,{value,enumerable:true,writable:true,configurable:true});
       }
+      hydrateSnapshots(user,row.snapshots);
       return user;
     });
   }
@@ -128,5 +145,5 @@ export function createRepository() {
       await query(`INSERT INTO ${name} VALUES (${args.map((_,i)=>"$"+(i+1)).join(",")})`,args);
     }
   }
-  return { query, transaction, read, write, close:()=>pool.end() };
+  return { query, transaction, read, write, readUsers, saveUser, close:()=>pool.end() };
 }
