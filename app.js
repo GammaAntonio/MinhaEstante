@@ -14,7 +14,7 @@ import {
 } from "./ui.js";
 import {
   userBooks, renderPersonalPage, renderPost, renderReview, renderList,
-  renderActivity, avatar, themeStyle,
+  renderActivity, avatar, themeStyle, renderPersonalHeader,
 } from "./personal.js";
 import { registerBookTools } from "./webmcp.js";
 import {
@@ -62,6 +62,7 @@ async function hydrateUserLibrary(user) {
       for (const book of loaded) Store.ensureBookInLibrary(draft, book);
     });
   }
+  return loaded.length;
 }
 
 function searchForm(query = "", type = "q") {
@@ -1196,9 +1197,7 @@ function adminPage(query) {
 
 async function render(route, active) {
   const [name = "home", id, action] = route.parts;
-  const profile = (name === "pagina" ? Store.userByName(id) : Store.userByName(route.query.get("user"))) ||
-    Store.currentUser();
-  setBackgroundMusic(name === "pagina" && !action ? profile : null);
+  if (name !== "pagina" || action) setBackgroundMusic(null);
   const main = h("main", { id: "main", class: "page-content", tabindex: "-1" });
   const site = h("div", { class: "site" }, renderHeader(route), main,
     h("footer", { class: "site-footer" },
@@ -1259,18 +1258,33 @@ async function render(route, active) {
         content = bookPage(id, active);
         break;
       case "pagina": {
-        const u = Store.userByName(id);
+        const pageMedia = route.query.get("media") === "albums" ? "albums" : "books";
+        let u = action === "editar" ? Store.userByName(id) : null;
+        if (!action) {
+          const identity = await Store.loadPublicProfile(id, pageMedia, "identity");
+          if (!active()) return;
+          main.classList.add("personal-route");
+          main.append(h("div", { class: "personal-wrap", style: themeStyle(identity) },
+            h("article", { class: "personal", "aria-busy": "true" }, renderPersonalHeader(identity),
+              h("p", { role: "status" }, "Carregando o acervo…"))));
+          document.title = `${identity.page.title} · ${SITE_CONFIG.name}`;
+          await new Promise(resolve => setTimeout(resolve, 0));
+          if (!active()) return;
+          u = await Store.loadPublicProfile(id, pageMedia);
+          if (!active()) return;
+          if (pageMedia === "books") void hydrateUserLibrary(u).then(loaded => {
+            if (loaded && active()) rerender();
+          }).catch(() => {});
+        }
         if (!u) {
           content = empty("essa página não existe.", "confira o endereço ou volte para a home.");
           break;
         }
-        const pageMedia = route.query.get("media") === "albums" ? "albums" : "books";
         if (action === "editar") {
           content = owner(u) ? (await import("./editor.js")).renderEditor(u, pageMedia) :
             h("div", { class: "error-box" }, "Apenas o dono desta página pode editá-la.",
               link("entrar", "#/login"));
         } else {
-          if (pageMedia === "books") await hydrateUserLibrary(u);
           const friendship = await friendshipProfileState(u);
           const view = mediaUser(u, pageMedia);
           const hasCustomCode = view.page.customCode.mode !== "visual";
@@ -1301,6 +1315,10 @@ async function render(route, active) {
             !hasCustomCode || safeMode ?
               renderPersonalPage(u, { media: pageMedia, friendship }) :
               await (await import("./advanced.js")).advancedFrame(view, view.page.customCode, { friendship }));
+          if (active()) {
+            setBackgroundMusic(u);
+            document.title = `${view.page.title} · ${SITE_CONFIG.name}`;
+          }
         }
         break;
       }
@@ -1328,9 +1346,9 @@ async function render(route, active) {
         content = h("div", {}, empty("essa página não existe."), link("voltar à home", "#/home"));
     }
     if (active()) {
-      main.append(content);
+      main.replaceChildren(content);
       positionBackgroundMusic(site);
-      document.title = `${name === "pagina" ? Store.userByName(id)?.page.title || "Página" : name === "livro" ? Store.getBook(id)?.title || "Livro" : name === "albuns" ? "Álbuns" : name === "livros" ? "Livros" : name} · ${SITE_CONFIG.name}`;
+      if (name !== "pagina" || action) document.title = `${name === "pagina" ? "Editar página" : name === "livro" ? Store.getBook(id)?.title || "Livro" : name === "albuns" ? "Álbuns" : name === "livros" ? "Livros" : name} · ${SITE_CONFIG.name}`;
       window.scrollTo(0, 0);
       animateNavigation(main, name, name === "pagina" ? `${id}${action || ""}${route.query.get("media") || ""}` : name);
 
@@ -1347,8 +1365,10 @@ async function boot() {
   try {
     const hadSession = !!Store.read(Store.KEYS.session);
     const publicCatalog = name => ["home", "livros", "albuns"].includes(name || "home");
-    const initialRoute = location.hash.slice(2).split(/[/?]/)[0];
-    const directoryOnly = publicCatalog(initialRoute) &&
+    const [initialRoute, , initialAction] = location.hash.slice(2).split("?")[0].split("/");
+    const isPublicProfile = (name, action) => name === "pagina" && !action;
+    const directoryOnly = (publicCatalog(initialRoute) ||
+      isPublicProfile(initialRoute, initialAction)) &&
       await Store.bootstrapAnonymousHome().catch(() => false);
     if (!directoryOnly) await Store.bootstrapStorage();
     if (hadSession && !Store.currentUser()) notify("Sua sessão terminou. Entre novamente com a mesma senha.");
@@ -1359,7 +1379,7 @@ async function boot() {
         coverWorkerRequested = true;
         navigator.serviceWorker.register("/cover-cache.js").catch(() => {});
       }
-      if (publicCatalog(route.parts[0])) return render(route, active);
+      if (publicCatalog(route.parts[0]) || isPublicProfile(route.parts[0], route.parts[2])) return render(route, active);
       try {
         await Store.ensureFullUsers();
         if (active()) await render(route, active);

@@ -64,6 +64,22 @@ export async function ensureFullUsers() {
   await directoryUpgrade;
 }
 
+export async function loadPublicProfile(username, media, part = "content") {
+  const query = new URLSearchParams({ user: username, media, part });
+  const { user, selectedVariant, friends } = await request(`/api/persistence/profile?${query}`);
+  const absoluteImage = value => typeof value === "string" && value.startsWith("/api/persistence/profile-image?")
+    ? new URL(value, location.origin).href : value;
+  if (part === "content") {
+    for (const field of ["avatar", "banner"]) user.page[field] = absoluteImage(user.page[field]);
+    user.page.gadgets?.forEach(gadget => {
+      if (gadget?.image) gadget.image = absoluteImage(gadget.image);
+    });
+  }
+  if (selectedVariant) user.page.mediaPages = { [media]: { ...user.page } };
+  if (friends) user.profileFriends = friends;
+  return user;
+}
+
 export async function lookupKnownBooks(q, type) {
   return (await request(`/api/persistence/known-books?${new URLSearchParams({ q, type })}`)).books;
 }

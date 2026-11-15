@@ -339,14 +339,15 @@ const albumGadgetNames = {
 
 function friendsPanel(user) {
   const ids = Array.isArray(user?.social?.friendIds) ? user.social.friendIds : [];
-  const friends = ids.map((id) => allUsers().find((item) => String(item.id) === String(id)))
+  const source = user.profileFriends || allUsers();
+  const friends = ids.map((id) => source.find((item) => String(item.id) === String(id)))
     .filter(Boolean).slice(0, 6);
   return panel(`amigos (${Number(user?.social?.friendCount || ids.length || 0)})`,
     friends.length ?
       h("div", { class: "profile-friends-grid" },
         friends.map((friend) => link([
           h("span", { class: "profile-friend-avatar" }, friend.page.avatar ?
-            picture(friend.page.avatar, "", "") : friend.page.displayName.charAt(0).toUpperCase()),
+            picture(friend.page.avatar, "", "") : (friend.page.displayName || friend.username).charAt(0).toUpperCase()),
           h("small", {}, friend.page.displayName),
         ], `#/pagina/${friend.username}`, { class: "profile-friend" }))) :
       h("div", { class: "panel-body muted" }, "nenhum amigo adicionado ainda."),
@@ -407,9 +408,9 @@ export function renderWall(user, media = "books") {
         entries.sort((a, b) => b.date.localeCompare(a.date)).map((e) => e.el) :
         empty("Ainda não há publicações."))));
   }
-  if (types.includes("favorites")) blocks.push(panel("os que passaram no processo seletivo",
+  if (types.includes("favorites")) blocks.push(panel("Livros favoritos",
     booksGrid(userBooks(user, (e) => e.favorite).slice(0, 10), user.ratings, c.wallStyle)));
-  if (types.includes("activity")) blocks.push(panel("últimos acontecimentos de relevância discutível",
+  if (types.includes("activity")) blocks.push(panel("Atividade recente",
     renderActivity(user.activity.filter((a) => !a.albumId), user.username)));
   return h("div", { class: `personal-wall wall-${c.wallStyle}` }, blocks.length ? blocks :
     empty("Esta página ainda não tem seções.", "Escolha o que mostrar no editor."));
@@ -436,7 +437,7 @@ export function renderPersonalHeader(user) {
   const p = user.page;
   const hasBanner = !!p.banner;
   return h("header", {
-    class: `personal-header ${p.customization.headerStyle}${hasBanner ? " has-banner" : ""}`,
+    class: `personal-header ${p.customization?.headerStyle || DEFAULT_THEME.headerStyle}${hasBanner ? " has-banner" : ""}`,
   },
     hasBanner && picture(p.banner, "", "personal-banner"),
     h("div", { class: "personal-header-content" },
@@ -457,14 +458,13 @@ export function renderPersonalPage(user, { preview = false, media = "books", fri
       h("div", { class: "personal-decoration-region" },
         renderPersonalHeader(view), stickerLayer(view.page.stickers)),
       h("div", { class: "personal-topbar" },
-        h("span", {}, "você está na página de ",
-          userIdentity(user, { username: true, linkProfile: true }), ". tente não mexer em nada."),
+        h("span", {}, "Página de ", userIdentity(user, { username: true, linkProfile: true })),
         h("small", {}, media === "albums" ? "álbuns · faixas · resenhas" : "livros · textos · listas")),
       h("div", { class: `personal-layout ${c.sidebarPosition}` },
         renderSidebar(view, media, friendship, player), renderWall(view, media)),
       h("footer", { class: "personal-footer" },
         view.page.stickers?.length > 0 && stickerCredits(view.page.stickers),
-        "valeu pela visita. não sei como você chegou aqui. ",
+        "Valeu pela visita. ",
         h("span", { "aria-hidden": "true" }, "✦"))));
 }
 

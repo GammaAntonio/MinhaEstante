@@ -639,6 +639,15 @@ button.flow-arrow { background: #efe0c8; color: #542a2d; border-color: #c9ac89; 
 .personal-player .music-screen { aspect-ratio: 1; min-height: 0; align-content: end; grid-template-columns: minmax(0,1fr); }
 .personal-player .music-screen { isolation: isolate; }
 .personal-player .music-transport { border-top: 1px solid #765e63; }
+.personal-route .personal-wall > .panel, .personal-route .personal-wall .entries > .entry {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 180px;
+}
+.shelf-stat-details { margin: .65rem .75rem; }
+.shelf-stat-group { margin-block: .7rem; }
+.shelf-stat-group h3 { font-size: .9rem; }
+.shelf-stat-group li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .4rem; }
+.shelf-stat-group meter { grid-column: 1 / -1; width: 100%; height: .4rem; }
 .navbar > a:focus-visible, .nav-extras > summary:focus-visible {
   outline: 2px solid #a36643;
   outline-offset: -3px;

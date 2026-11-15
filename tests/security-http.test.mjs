@@ -106,6 +106,18 @@ test("servidor entrega os assets públicos e protege arquivos internos e mutaç�
       assert.equal(created.status, 201);
       assert.equal(user.page.displayName, username);
       const cookie = created.headers.get("set-cookie").split(";")[0];
+      const identity = await fetch(base + "/api/persistence/profile?part=identity&user=" + username);
+      assert.equal(identity.status, 200);
+      assert.equal(identity.headers.get("cache-control"), "no-store");
+      const summary = (await identity.json()).user;
+      assert.equal(summary.username, username);
+      assert.equal(summary.library, undefined);
+      const profile = await fetch(base + "/api/persistence/profile?user=" + username, { headers: { Cookie: cookie } });
+      assert.equal(profile.status, 200);
+      const publicProfile = (await profile.json()).user;
+      assert.equal(publicProfile.id, user.id);
+      assert.equal(publicProfile.account, undefined);
+      assert.equal(publicProfile.page.customCode.previousVersion, undefined);
       const secondRegistration = await json("/api/auth/register", {
         username: second, fullName: "Outra Conta", birthDate: "1990-04-01",
         email: second + "@example.invalid", password: "senha-teste", confirmPassword: "senha-teste",

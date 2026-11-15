@@ -497,7 +497,8 @@ export async function advancedDocument(user, code, nonce, { friendship = null, e
   // A CSP precede o HTML do perfil. O iframe tem origem opaca.
   const origin = globalThis.location?.origin || "";
   const uploads = /^https?:\/\/[a-z0-9.:-]+$/i.test(origin) ? origin + "/api/persistence/page-assets/file/" : "";
-  const imageSources = ["data:", uploads, "https://covers.openlibrary.org", "https://books.google.com",
+  const profileImages = uploads ? origin + "/api/persistence/profile-image" : "";
+  const imageSources = ["data:", uploads, profileImages, "https://covers.openlibrary.org", "https://books.google.com",
     "https://books.googleusercontent.com", "https://coverartarchive.org", "https://*.archive.org",
     "https://*.mzstatic.com", "https://api.iconify.design"].filter(Boolean).join(" ");
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${imageSources}; connect-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css.replace(/<\/style/gi, "<\\/style")}</style><script>${bridge}<\/script></head><body>${html}<script>${js.replace(/<\/script/gi, "<\\/script")}<\/script></body></html>`;

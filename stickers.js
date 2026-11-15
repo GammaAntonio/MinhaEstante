@@ -8,16 +8,16 @@ const categories = {
   Videogames: "game", Emojis: "smile", Molduras: "frame", Selos: "badge",
   Y2K: "disk", Natureza: "flower", Geometria: "triangle",
 };
-function graphic(item) {
+function graphic(item, lazy = false) {
   const src = item.src.includes(":") ? `https://api.iconify.design/${item.src.replace(":", "/")}.svg` : item.src;
-  return h("img", { src, alt: "", draggable: "false", referrerpolicy: "no-referrer" });
+  return h("img", { loading: lazy ? "lazy" : null, decoding: "async", src, alt: "", draggable: "false", referrerpolicy: "no-referrer" });
 }
 export function stickerLayer(values) {
   const items = cleanStickers(values);
   if (!items.length) return null;
   return h("div", { class: "sticker-layer", "aria-hidden": "true" },
     items.map(item => h("span", { class: "sticker-position", style:
-      `left:${item.x}%;top:${item.y}%;width:${item.size}%;opacity:${item.opacity};transform:translate(-50%,-50%) rotate(${item.angle}deg)` }, graphic(item))));
+      `left:${item.x}%;top:${item.y}%;width:${item.size}%;opacity:${item.opacity};transform:translate(-50%,-50%) rotate(${item.angle}deg)` }, graphic(item, true))));
 }
 export function stickerCredits(values) {
   const items = cleanStickers(values);

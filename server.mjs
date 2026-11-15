@@ -1226,6 +1226,91 @@ async function persistenceApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/persistence/profile-image") {
+    const username = url.searchParams.get("user") || "";
+    const media = url.searchParams.get("media") === "albums" ? "albums" : "books";
+    const field = url.searchParams.get("field");
+    const gadget = /^gadget:(\d{1,3})$/.exec(field || "");
+    const attribute = gadget ? ["gadgets", gadget[1], "image"] : [field];
+    if (!/^[a-z0-9_-]{1,64}$/i.test(username) || (!gadget && !["avatar", "banner"].includes(field))) {
+      json(res, 404, { error: "Imagem não encontrada." });
+      return true;
+    }
+    const { rows: [image] } = await repository.query(`SELECT
+      coalesce(variant.configuration, base.configuration) #>> $3::text[] AS value
+      FROM users u JOIN profiles base ON base.user_id = u.id AND base.media = 'legacy'
+        LEFT JOIN profiles variant ON variant.user_id = u.id AND variant.media = $2
+      WHERE u.username = $1`, [username, media, attribute]);
+    const content = image?.value?.length < 8 * 1024 * 1024 &&
+      /^data:(image\/(?:png|jpeg|webp|gif));base64,([a-z0-9+/=]+)$/i.exec(image.value);
+    if (!content) {
+      json(res, 404, { error: "Imagem não encontrada." });
+      return true;
+    }
+    const body = Buffer.from(content[2], "base64");
+    res.writeHead(200, { "Content-Type": content[1], "Content-Length": body.length,
+      "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    res.end(body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/persistence/profile") {
+    const username = url.searchParams.get("user") || "";
+    const media = url.searchParams.get("media") === "albums" ? "albums" : "books";
+    if (!/^[a-z0-9_-]{1,64}$/i.test(username)) {
+      json(res, 400, { error: "Nome de usuário inválido." });
+      return true;
+    }
+    const { rows: [identity] } = await repository.query(`SELECT u.id, u.username,
+      jsonb_build_object('displayName', base.configuration->>'displayName',
+        'title', coalesce(variant.configuration->>'title', base.configuration->>'title'),
+        'subtitle', coalesce(variant.configuration->>'subtitle', base.configuration->>'subtitle'),
+        'customization', coalesce(variant.configuration->'customization', base.configuration->'customization')) AS page
+      FROM users u LEFT JOIN profiles base ON base.user_id = u.id AND base.media = 'legacy'
+        LEFT JOIN profiles variant ON variant.user_id = u.id AND variant.media = $2
+      WHERE u.username = $1`, [username, media]);
+    if (!identity) {
+      json(res, 404, { error: "Perfil não encontrado." });
+      return true;
+    }
+    if (url.searchParams.get("part") === "identity") {
+      json(res, 200, { user: { ...identity, isCreator: identity.id === creatorUserId } });
+      return true;
+    }
+    const [record] = await repository.readUsers({ userId: identity.id });
+    if (!record) {
+      json(res, 404, { error: "Perfil não encontrado." });
+      return true;
+    }
+    const viewer = await requestUser(req);
+    const friendships = await visibleFriendships(await readFriendshipsFile(), viewer?.id);
+    // A página pública é uma projeção. O editor continua usando o registro completo.
+    const user = publicUser(record, friendships);
+    const selectedVariant = !!user.page.mediaPages?.[media];
+    if (user.page.mediaPages?.[media]) {
+      const { displayName, music } = user.page;
+      user.page = { ...user.page.mediaPages[media], displayName, music };
+    } else {
+      delete user.page.mediaPages;
+    }
+    const imageURL = (value, field) => typeof value === "string" && value.length > 8192 &&
+      value.length < 8 * 1024 * 1024 && /^data:image\/(png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(value)
+      ? `/api/persistence/profile-image?${new URLSearchParams({ user: username, media, field })}`
+      : value;
+    for (const field of ["avatar", "banner"]) user.page[field] = imageURL(user.page[field], field);
+    user.page.gadgets?.forEach((gadget, index) => {
+      if (gadget?.image && index <= 999) gadget.image = imageURL(gadget.image, `gadget:${index}`);
+    });
+    const friends = user.social.friendIds.slice(0, 6);
+    const { rows: previews } = friends.length ? await repository.query(`SELECT u.id, u.username,
+      jsonb_build_object('displayName', p.configuration->>'displayName',
+        'avatar', p.configuration->>'avatar') AS page
+      FROM users u JOIN profiles p ON p.user_id = u.id AND p.media = 'legacy'
+      WHERE u.id = ANY($1::text[])`, [friends]) : { rows: [] };
+    json(res, 200, { user, selectedVariant, friends: previews });
+    return true;
+  }
+
   if (req.method === "PUT" && url.pathname === "/api/persistence/users") {
     const payload = await readJsonBody(req);
     if (!Array.isArray(payload?.users)) {
