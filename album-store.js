@@ -115,6 +115,7 @@ export function setAlbumStatus(album, status) {
     const item = entry(state, album);
     if (item.status === status) return;
     item.status = status;
+    if (status === "ouvido") item.markedListenedAt = new Date().toISOString();
     albumActivity(
       user,
       album,

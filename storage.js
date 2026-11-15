@@ -658,6 +658,7 @@ export function setBookStatus(book, status) {
     const e = ensureBookInLibrary(d, book);
     if (e.status === status) return;
     e.status = status;
+    if (status === 'lidos') e.completedAt = new Date().toISOString();
     activity(
       d,
       `${status === 'lidos' ? 'terminou' : status === 'lendo' ? 'começou a ler' : status === 'abandonados' ? 'abandonou' : 'quer ler'} ${book.title}.`,

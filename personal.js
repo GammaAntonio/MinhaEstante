@@ -140,6 +140,54 @@ function ratingAverage(ratings) {
   return `Nota média de ${mean.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} em 5`;
 }
 
+function ranked(title, values, limit = 5) {
+  const counts = new Map();
+  for (const value of values) {
+    if (typeof value !== "string" || !value.trim()) continue;
+    const label = value.trim();
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  const rows = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "pt-BR")).slice(0, limit);
+  if (!rows.length) return null;
+  const max = rows[0][1];
+  return h("section", { class: "shelf-stat-group" },
+    h("h3", {}, title),
+    h("ul", { class: "small-nav" }, rows.map(([label, count]) =>
+      h("li", {}, h("span", {}, label), h("strong", {}, count),
+        h("meter", { min: 0, max, value: count, "aria-hidden": "true" })))));
+}
+
+function years(entries, key) {
+  return entries.map(entry => typeof entry[key] === "string" && /^\d{4}-\d{2}-\d{2}T/.test(entry[key])
+    ? entry[key].slice(0, 4) : null);
+}
+
+function collectionStatistics(user, albumsMode) {
+  const state = albumsMode ? albumState(user) : user;
+  const items = albumsMode ? userAlbums(user) : userBooks(user);
+  const favorites = albumsMode ? userAlbums(user, x => x.favorite) : userBooks(user, x => x.favorite);
+  const year = String(new Date().getFullYear());
+  const addedYears = years(state.library, "addedAt");
+  const marked = years(state.library, albumsMode ? "markedListenedAt" : "completedAt");
+  const total = target => addedYears.filter(value => value === target).length;
+  const before = String(Number(year) - 1);
+  const ratings = Object.values(state.ratings || {}).filter(n => typeof n === "number" && n > 0 && n <= 5);
+  return h("details", { class: "shelf-stat-details" }, h("summary", {}, "Ver panorama do acervo"),
+    ranked(albumsMode ? "Artistas no acervo" : "Autores no acervo", items.flatMap(item => item.authors || [])),
+    ranked(albumsMode ? "Gêneros no acervo" : "Assuntos dos livros", items.flatMap(item => (albumsMode ? item.genres : item.subjects) || [])),
+    ranked(albumsMode ? "Décadas de lançamento" : "Décadas da primeira publicação", items.map(item => {
+      const value = Number(albumsMode ? item.year : item.firstPublishYear);
+      return value > 0 ? `Anos ${Math.floor(value / 10) * 10}` : null;
+    })),
+    ranked("Distribuição das notas", ratings.map(n => n.toLocaleString("pt-BR") + " de 5"), 10),
+    ranked("Entradas no acervo por ano", addedYears),
+    ranked(albumsMode ? "Álbuns marcados como ouvidos por ano" : "Livros marcados como concluídos por ano", marked),
+    addedYears.some(value => value === year || value === before) &&
+      h("p", {}, `Adições ao acervo em ${year}: ${total(year)}. Em ${before}: ${total(before)}.`),
+    favorites.length > 0 && h("section", { class: "shelf-stat-group" },
+      h("h3", {}, "Favoritos"), booksGrid(favorites.slice(0, 4), state.ratings)));
+}
+
 export function gadgetBody(g, user, media = "books", friendship = null) {
   const p = user.page;
   const albumsMode = media === "albums";
@@ -254,7 +302,7 @@ export function gadgetBody(g, user, media = "books", friendship = null) {
     case "stats":
       if (albumsMode) {
         const state = albumState(user);
-        return h("ul", { class: "small-nav" }, [
+        return h("div", {}, h("ul", { class: "small-nav" }, [
           [state.library.length, "álbuns no acervo"],
           [state.library.filter((x) => x.status === "ouvido").length, "álbuns ouvidos"],
           [state.library.filter((x) => x.status === "ouvindo").length, "ouvindo agora"],
@@ -264,9 +312,10 @@ export function gadgetBody(g, user, media = "books", friendship = null) {
             n + Object.keys(item).length, 0), "faixas avaliadas"],
           [state.reviews.length, "resenhas musicais"],
         ].map(([n, t]) => h("li", {}, `${n} ${t}`)),
-        ratingAverage(state.ratings) && h("li", {}, ratingAverage(state.ratings)));
+        ratingAverage(state.ratings) && h("li", {}, ratingAverage(state.ratings))),
+        collectionStatistics(user, true));
       }
-      return h("ul", { class: "small-nav" }, [
+      return h("div", {}, h("ul", { class: "small-nav" }, [
         [user.library.length, "livros no acervo"],
         [user.library.filter((x) => x.status === "lidos").length, "livros lidos"],
         [user.library.filter((x) => x.status === "lendo").length, "livros em leitura"],
@@ -275,7 +324,8 @@ export function gadgetBody(g, user, media = "books", friendship = null) {
         [Object.keys(user.ratings).length, "avaliações"],
         [user.reviews.length, "resenhas"], [user.lists.length, "listas"],
       ].map(([n, t]) => h("li", {}, `${n} ${t}`)),
-      ratingAverage(user.ratings) && h("li", {}, ratingAverage(user.ratings)));
+      ratingAverage(user.ratings) && h("li", {}, ratingAverage(user.ratings))),
+      collectionStatistics(user, false));
     default:
       return null;
   }
