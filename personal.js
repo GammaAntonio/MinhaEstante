@@ -133,6 +133,13 @@ function socialAnchor(label, href) {
   return anchor;
 }
 
+function ratingAverage(ratings) {
+  const scores = Object.values(ratings || {}).filter(n => typeof n === "number" && n > 0 && n <= 5);
+  if (!scores.length) return null;
+  const mean = scores.reduce((sum, n) => sum + n, 0) / scores.length;
+  return `Nota média de ${mean.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} em 5`;
+}
+
 export function gadgetBody(g, user, media = "books", friendship = null) {
   const p = user.page;
   const albumsMode = media === "albums";
@@ -195,11 +202,11 @@ export function gadgetBody(g, user, media = "books", friendship = null) {
             return h("article", { class: "entry" },
               h("h3", {}, link(album?.title || "Álbum", `#/album/${r.albumId}?user=${user.username}`)),
               r.rating && stars(r.rating), h("p", {}, r.text));
-          }) : empty("nenhuma resenha ainda. opiniões existem, só não chegaram aqui."));
+          }) : empty("Ainda não há resenhas de álbuns."));
       }
       return h("div", { class: "panel-body" }, user.reviews.length ?
         user.reviews.slice(0, 3).map((r) => renderReview(r, user)) :
-        empty("nenhuma resenha ainda. opiniões existem, só não chegaram aqui."));
+        empty("Ainda não há resenhas de livros."));
     case "activity":
       return renderActivity(albumsMode ?
         user.activity.filter((a) => a.albumId) : user.activity.filter((a) => !a.albumId), user.username);
@@ -248,18 +255,27 @@ export function gadgetBody(g, user, media = "books", friendship = null) {
       if (albumsMode) {
         const state = albumState(user);
         return h("ul", { class: "small-nav" }, [
+          [state.library.length, "álbuns no acervo"],
           [state.library.filter((x) => x.status === "ouvido").length, "álbuns ouvidos"],
+          [state.library.filter((x) => x.status === "ouvindo").length, "ouvindo agora"],
+          [state.library.filter((x) => x.favorite).length, "álbuns favoritos"],
           [Object.keys(state.ratings).length, "avaliações de álbuns"],
           [Object.values(state.trackRatings || {}).reduce((n, item) =>
             n + Object.keys(item).length, 0), "faixas avaliadas"],
           [state.reviews.length, "resenhas musicais"],
-        ].map(([n, t]) => h("li", {}, `${n} ${t}`)));
+        ].map(([n, t]) => h("li", {}, `${n} ${t}`)),
+        ratingAverage(state.ratings) && h("li", {}, ratingAverage(state.ratings)));
       }
       return h("ul", { class: "small-nav" }, [
+        [user.library.length, "livros no acervo"],
         [user.library.filter((x) => x.status === "lidos").length, "livros lidos"],
+        [user.library.filter((x) => x.status === "lendo").length, "livros em leitura"],
+        [user.library.filter((x) => x.status === "quero-ler").length, "na lista de leitura"],
+        [user.library.filter((x) => x.status === "abandonados").length, "leituras abandonadas"],
         [Object.keys(user.ratings).length, "avaliações"],
         [user.reviews.length, "resenhas"], [user.lists.length, "listas"],
-      ].map(([n, t]) => h("li", {}, `${n} ${t}`)));
+      ].map(([n, t]) => h("li", {}, `${n} ${t}`)),
+      ratingAverage(user.ratings) && h("li", {}, ratingAverage(user.ratings)));
     default:
       return null;
   }
@@ -312,14 +328,14 @@ export function renderWall(user, media = "books") {
         .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
       blocks.push(panel("meu caderno", h("div", { class: "entries" },
         posts.length ? posts.map((p) => renderPost(p, "post", user)) :
-          empty("nada escrito aqui ainda. o espaço pelo menos está bonito."))));
+          empty("Ainda não há textos nesta página."))));
     }
     if (types.includes("activity")) {
       blocks.push(panel("notícias musicais",
         renderActivity(user.activity.filter((a) => a.albumId), user.username)));
     }
     return h("div", { class: `personal-wall wall-${c.wallStyle}` }, blocks.length ? blocks :
-      empty("nenhuma música pra mostrar. silêncio editorial.", "Adicione álbuns ou ative módulos no editor."));
+      empty("Ainda não há álbuns para mostrar.", "Adicione álbuns ou escolha outras seções no editor."));
   }
   const blocks = [];
   if (types.includes("books")) {
@@ -339,14 +355,14 @@ export function renderWall(user, media = "books") {
     blocks.push(panel(c.wallStyle === "blog" ? "meu caderno" : "textos, listas & outras coisas",
       h("div", { class: "entries" }, entries.length ?
         entries.sort((a, b) => b.date.localeCompare(a.date)).map((e) => e.el) :
-        empty("nada publicado. uma disciplina admirável."))));
+        empty("Ainda não há publicações."))));
   }
   if (types.includes("favorites")) blocks.push(panel("os que passaram no processo seletivo",
     booksGrid(userBooks(user, (e) => e.favorite).slice(0, 10), user.ratings, c.wallStyle)));
   if (types.includes("activity")) blocks.push(panel("últimos acontecimentos de relevância discutível",
     renderActivity(user.activity.filter((a) => !a.albumId), user.username)));
   return h("div", { class: `personal-wall wall-${c.wallStyle}` }, blocks.length ? blocks :
-    empty("nenhum bloco aqui. minimalismo involuntário.", "Os módulos podem ser escolhidos no editor da página."));
+    empty("Esta página ainda não tem seções.", "Escolha o que mostrar no editor."));
 }
 
 export function themeStyle(user) {

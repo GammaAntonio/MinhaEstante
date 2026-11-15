@@ -273,14 +273,14 @@ function home(user, { inspect = false } = {}) {
         panel("listas que estou montando",
           h("div", { class: "panel-body" },
             user.lists.length ? user.lists.slice(0, 3).map(renderList) :
-              empty("nenhuma lista por aqui.", "crie uma lista e coloque nela o que fizer sentido.")),
+              empty("Ainda não há listas.", "Crie uma para reunir seus livros.")),
           link("ver listas", `#/listas?user=${user.username}`)),
         panel("últimas páginas do diário",
           h("div", { class: "panel-body" },
             [...user.journal, ...user.posts].length ?
               [...user.journal, ...user.posts].sort((a, b) => b.date.localeCompare(a.date))
                 .slice(0, 2).map((p) => renderPost(p, "post", user)) :
-              empty("nada escrito. produtividade exemplar.")),
+              empty("Ainda não há textos por aqui.")),
           link("abrir diário", `#/diario?user=${user.username}`)))));
 }
 
@@ -510,7 +510,7 @@ function catalogPage(query, active) {
       status.textContent = result.warning ||
         `${result.total.toLocaleString("pt-BR")} obras encontradas · ${result.source === "google" ? "Google Books" : "Open Library"}`;
       results.replaceChildren(result.books.length ? mediaBrowser(result.books, booksGrid(result.books)) :
-        empty("nada. absolutamente nada.", "Tente outro título, autor ou ISBN."));
+        empty("Nenhum livro encontrado.", "Tente outro título, autor ou ISBN."));
       if (result.source !== "local" && result.total > SITE_CONFIG.pageSize) {
         const pagination = h("div", { class: "pagination" });
         if (page > 1) pagination.append(link("← anterior",
@@ -643,7 +643,7 @@ function bookPage(id, active, { embedded = false } = {}) {
           reviews.map(({ user, review }) => h("div", {},
             link(`visitar página de ${user.page.displayName}`, `#/pagina/${user.username}`),
             renderReview(review, user))) :
-          empty("este livro ainda não ganhou uma resenha.", "A sua pode ser a primeira neste navegador."))));
+          empty("Ainda não há resenhas para este livro."))));
   }
   const cached = Store.getBook(id);
   if (cached) draw(cached, true);
@@ -959,7 +959,7 @@ function listsPage(user) {
       panel(list.title, h("div", { class: "panel-body" },
         h("span", {}, "por ", userIdentity(user, { linkProfile: true })),
         renderList(list, user)))) :
-      empty("nenhuma lista por aqui.", "crie uma lista e dê o nome que quiser."));
+      empty("Ainda não há listas.", "Crie uma lista de livros."));
 }
 
 function listPage(id) {
@@ -1009,7 +1009,7 @@ function listPage(id) {
         userIdentity(user, { linkProfile: true })),
       link("visitar página", `#/pagina/${user.username}`)),
     h("p", { class: "multiline" }, list.description),
-    rows.childElementCount ? rows : empty("essa lista está vazia. bela contribuição até agora.",
+    rows.childElementCount ? rows : empty("Esta lista ainda está vazia.",
       "Adicione uma obra já consultada ou procure no catálogo."));
   if (canEdit) {
     const s = select("book", {
@@ -1107,7 +1107,7 @@ function journalPage(user) {
             rerender();
           }
         }), "danger")))) :
-    empty("nada escrito. produtividade exemplar.",
+    empty("Ainda não há entradas no diário.",
       "Um livro, vários livros, ou nada a ver com livros. Escreva."));
   return h("div", {},
     heading(owner(user) ? "meu diário" :
@@ -1171,7 +1171,7 @@ function adminPage(query) {
         }
       }), "danger"))));
   return h("div", {},
-    heading("administração", "contas e números deste navegador. sem interferir nas páginas."),
+    heading("Administração", "Contas e acervos."),
     h("div", { class: "toolbar" }, [
       [all.length, "usuários"], [sum("library"), "livros nas bibliotecas"],
       [sum("ratings"), "avaliações"], [sum("reviews"), "resenhas"],
