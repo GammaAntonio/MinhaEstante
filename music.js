@@ -1,8 +1,16 @@
 import { creatorTracks } from "./creator-playlist.js";
-import { drawPreset, visualModes } from "./player-visualizer.js";
 import { h, button, picture } from "./ui.js";
 import { mediaIcon } from "./media-hub.js";
 import { hasMP3Signature } from "./mp3-validation.js";
+
+let visualizerModule;
+function loadVisualizer() {
+  visualizerModule ??= import("./player-visualizer.js").catch(error => {
+    visualizerModule = null;
+    throw error;
+  });
+  return visualizerModule;
+}
 let backgroundAudio = null,
   albumAudio = null,
   resumeBackground = false;
@@ -207,6 +215,8 @@ function musicTransport(audio, artwork) {
   const painter = display.getContext("2d");
   const previous = h("canvas", { width: display.width, height: display.height }).getContext("2d");
   let previousMode, transitionAt = 0;
+  let presets;
+  let loadingPresets = false;
   let context, analyser, frequencies, wave, frame, stream, lastPaint = 0;
   let visible = true, lastChange = -20, activeMode;
   const observer = new IntersectionObserver(([entry]) => {
@@ -239,7 +249,7 @@ function musicTransport(audio, artwork) {
       const treble = live ? sample(82,85) : .08;
       if (live) analyser.getByteTimeDomainData(wave);
       if (!activeMode || time - lastChange >= 12 || time < lastChange) {
-        const choices = Object.keys(visualModes).filter(mode =>
+        const choices = Object.keys(presets.visualModes).filter(mode =>
           mode !== "auto" && mode !== "off" && mode !== activeMode && (mode !== "album" || hueReady));
         activeMode = choices[Math.floor(Math.random() * choices.length)];
         lastChange = time;
@@ -253,7 +263,7 @@ function musicTransport(audio, artwork) {
         transitionAt=now;
         previousMode=mode;
       }
-      drawPreset(painter, mode, time, {bass,mid,treble,wave,frequency:frequencies}, .7, hue);
+      presets.drawPreset(painter, mode, time, {bass,mid,treble,wave,frequency:frequencies}, .7, hue);
       if (previous && now-transitionAt<440) {
         painter.globalAlpha = 1 - (now-transitionAt)/440;
         painter.drawImage(previous.canvas,0,0);
@@ -278,8 +288,18 @@ function musicTransport(audio, artwork) {
         dispose();
       }
     }
-    display.hidden = false;
     context?.resume().catch(() => {});
+    if (!presets) {
+      if (!loadingPresets) {
+        loadingPresets = true;
+        loadVisualizer().then(module => {
+          presets = module;
+          if (display.isConnected) start();
+        }).catch(() => {}).finally(() => { loadingPresets = false; });
+      }
+      return;
+    }
+    display.hidden = false;
     frame = requestAnimationFrame(draw);
   }
   function dispose() {

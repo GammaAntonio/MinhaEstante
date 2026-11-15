@@ -34,6 +34,19 @@ test("servidor entrega os assets públicos e protege arquivos internos e mutaç�
     }
   });
 
+  await t.test("ETag responde 304 e APIs continuam fora do cache", async () => {
+    const first = await fetch(base + "/styles.css");
+    assert.match(first.headers.get("etag"), /^W\//);
+    const etag = first.headers.get("etag");
+    await first.text();
+    const same = await fetch(base + "/styles.css", { headers: { "If-None-Match": etag } });
+    assert.equal(same.status, 304);
+    assert.equal(await same.text(), "");
+    const account = await fetch(base + "/api/account", { headers: { "If-None-Match": etag } });
+    assert.equal(account.status, 401);
+    assert.equal(account.headers.get("cache-control"), "no-store");
+  });
+
   await t.test("código do servidor e lockfile não são publicados", async () => {
     for (const name of ["/server.mjs", "/package-lock.json", "/tests/auth.test.mjs"]) {
       assert.equal((await fetch(base + name)).status, 404, name);

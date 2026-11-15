@@ -1362,19 +1362,27 @@ const server = http.createServer(async (req, res) => {
     }
     const name = pathname === "/" ? "index.html" : pathname.slice(1);
     const file = path.join(root, name);
-    if (!publicFiles.has(name) || !(await fileExists(file))) {
+    const stat = publicFiles.has(name) ? await fsp.lstat(file).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }) : null;
+    if (!stat?.isFile()) {
       res.writeHead(404);
       res.end("Arquivo não encontrado");
       return;
     }
-    res.writeHead(200, {
+    const etag = `W/"${stat.size.toString(16)}-${stat.ino.toString(16)}-${Math.trunc(stat.mtimeMs).toString(16)}"`;
+    const requestedTags = String(req.headers["if-none-match"] || "").split(",").map(value => value.trim());
+    const unchanged = requestedTags.includes("*") || requestedTags.includes(etag) || requestedTags.includes(etag.slice(2));
+    res.writeHead(unchanged ? 304 : 200, {
       "Content-Type":
         types[path.extname(file)] + (name.endsWith(".png") ? "" : "; charset=utf-8"),
-      "Cache-Control": "no-store",
+      "Cache-Control": "public, no-cache",
+      ETag: etag,
       "X-Content-Type-Options": "nosniff",
       ...(name === "index.html" ? { "Content-Security-Policy": "frame-ancestors 'none'" } : {}),
     });
-    if (req.method === "HEAD") {
+    if (unchanged || req.method === "HEAD") {
       res.end();
       return;
     }

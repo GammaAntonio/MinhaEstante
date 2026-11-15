@@ -116,7 +116,7 @@ export function picture(url, alt, cls = "") {
     onerror: (e) => e.currentTarget.remove(),
   });
 }
-export function cover(book, size = "M") {
+export function cover(book, size = "M", { priority = false } = {}) {
   const wrapper = h(
     "div",
     {
@@ -146,9 +146,11 @@ export function cover(book, size = "M") {
     if (url)
       wrapper.append(
         h("img", {
+          loading: priority ? "eager" : "lazy",
+          fetchpriority: priority ? "high" : "auto",
+          decoding: "async",
           src: url,
           alt: "",
-          loading: "lazy",
           referrerpolicy: "no-referrer",
           onerror: (e) => e.currentTarget.remove(),
         }),
@@ -164,6 +166,9 @@ export function cover(book, size = "M") {
   if (src)
     wrapper.append(
       h("img", {
+        loading: priority ? "eager" : "lazy",
+        fetchpriority: priority ? "high" : "auto",
+        decoding: "async",
         src:
           book.type === "album"
             ? size === "L"
@@ -171,7 +176,6 @@ export function cover(book, size = "M") {
               : src
             : src.replace(/-M\.jpg/, "-" + size + ".jpg"),
         alt: "",
-        loading: "lazy",
         referrerpolicy: "no-referrer",
         onerror: failed,
         onload: (e) => {
@@ -181,7 +185,7 @@ export function cover(book, size = "M") {
     );
   return wrapper;
 }
-export function bookCard(book, { rating = null, small = false } = {}) {
+export function bookCard(book, { rating = null, small = false, priority = false } = {}) {
   const mediaType = book.type === "album" ? "album" : "book";
   const href = `#/${mediaType === "album" ? "album" : "livro"}/${encodeURIComponent(book.id)}`;
   const open = (event) => {
@@ -205,7 +209,7 @@ export function bookCard(book, { rating = null, small = false } = {}) {
     {
       class: `${mediaType === "album" ? "album-card " : ""}book-card ${small ? "small" : ""}`,
     },
-    link(cover(book), href, { "aria-label": book.title, onclick: open }),
+    link(cover(book, "M", { priority }), href, { "aria-label": book.title, onclick: open }),
     h(
       "div",
       { class: mediaType === "album" ? "book-info album-info" : "book-info" },
@@ -232,12 +236,12 @@ export function bookCard(book, { rating = null, small = false } = {}) {
     ),
   );
 }
-export function booksGrid(books, ratings = {}, style = "grid") {
+export function booksGrid(books, ratings = {}, style = "grid", { eagerCovers = 0 } = {}) {
   return books.length
     ? h(
         "div",
         { class: `books ${style}` },
-        books.map((b) => bookCard(b, { rating: ratings[b.id] })),
+        books.map((b, index) => bookCard(b, { rating: ratings[b.id], priority: index < eagerCovers })),
       )
     : empty(
         "nenhum livro nesta seleção.",

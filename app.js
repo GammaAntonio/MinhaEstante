@@ -16,8 +16,6 @@ import {
   userBooks, renderPersonalPage, renderPost, renderReview, renderList,
   renderActivity, avatar, themeStyle,
 } from "./personal.js";
-import { renderEditor, imageEditor } from "./editor.js";
-import { advancedFrame } from "./advanced.js";
 import { registerBookTools } from "./webmcp.js";
 import {
   catalogModes, albumCatalogPage, albumPage, albumListsPage,
@@ -182,7 +180,7 @@ function sideMenu(user) {
 
 function homeShelf(books, ratings) {
   const items = books.slice(0, 6);
-  const shelf = booksGrid(items, ratings);
+  const shelf = booksGrid(items, ratings, "grid", { eagerCovers: 2 });
   const inspector = h("section", { class: "shelf-inspector", "aria-label": "Ficha da estante" });
   const inspect = (book, selected) => {
     const author = book.authors?.join(", ");
@@ -1044,9 +1042,10 @@ function listPage(id) {
   return content;
 }
 
-function postForm(kind = "journal", existing = null, bookIds = []) {
+async function postForm(kind = "journal", existing = null, bookIds = []) {
   const u = requireUser();
   if (!u) return;
+  const { imageEditor } = await import("./editor.js");
   let image = existing?.image || "";
   const selected = new Set(existing?.bookIds || bookIds);
   const options = h("div", { class: "book-picker" }, Object.values(Store.catalog()).map((b) => {
@@ -1257,7 +1256,7 @@ async function render(route, active) {
         }
         const pageMedia = route.query.get("media") === "albums" ? "albums" : "books";
         if (action === "editar") {
-          content = owner(u) ? renderEditor(u, pageMedia) :
+          content = owner(u) ? (await import("./editor.js")).renderEditor(u, pageMedia) :
             h("div", { class: "error-box" }, "Apenas o dono desta página pode editá-la.",
               link("entrar", "#/login"));
         } else {
@@ -1291,7 +1290,7 @@ async function render(route, active) {
               h("small", {}, userIdentity(u, { username: true, linkProfile: true }))),
             !hasCustomCode || safeMode ?
               renderPersonalPage(u, { media: pageMedia, friendship }) :
-              await advancedFrame(view, view.page.customCode, { friendship }));
+              await (await import("./advanced.js")).advancedFrame(view, view.page.customCode, { friendship }));
         }
         break;
       }
@@ -1336,10 +1335,12 @@ async function render(route, active) {
 
 async function boot() {
   try {
+    const hadSession = !!Store.read(Store.KEYS.session);
     const isHome = pathname => !pathname || pathname === "#/home" || pathname === "#/";
     const directoryOnly = isHome(location.hash) &&
       await Store.bootstrapAnonymousHome().catch(() => false);
     if (!directoryOnly) await Store.bootstrapStorage();
+    if (hadSession && !Store.currentUser()) notify("Sua sessão terminou. Entre novamente com a mesma senha.");
     let fullStore = directoryOnly ? null : Promise.resolve();
     startRouter(async (route, active) => {
       if (!route.parts.length || route.parts[0] === "home") return render(route, active);
