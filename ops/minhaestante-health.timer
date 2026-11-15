@@ -1,0 +1,10 @@
+[Unit]
+Description=Amostra de saúde do MinhaEstante a cada cinco minutos
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
