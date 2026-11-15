@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { request as httpRequest } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -146,7 +147,20 @@ test("servidor entrega os assets públicos e protege arquivos internos e mutaç�
         });
         assert.equal((await sendImage(image.subarray(0, 12))).status, 400);
         assert.equal((await sendImage(image, "image/gif")).status, 400);
-        assert.equal((await sendImage(Buffer.alloc(5 * 1024 * 1024 + 1))).status, 413);
+        // O servidor pode responder e fechar o socket antes de receber um corpo acima do limite.
+        const oversized = await new Promise((resolve, reject) => {
+          const request = httpRequest(base + "/api/persistence/page-assets", {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "image/png", "Content-Length": 5 * 1024 * 1024 + 1 },
+          }, response => {
+            response.resume();
+            resolve(response.statusCode);
+          });
+          request.once("error", reject);
+          request.setTimeout(5000, () => request.destroy(new Error("Servidor não rejeitou o tamanho declarado")));
+          request.flushHeaders();
+        });
+        assert.equal(oversized, 413);
         const fakeAudio = await fetch(base + "/api/persistence/audio", {
           method: "POST", headers: { Cookie: cookie, "Content-Type": "audio/mpeg", "X-File-Name": "falso.mp3" },
           body: Buffer.from("ID3falso"),
