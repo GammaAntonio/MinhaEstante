@@ -1342,8 +1342,14 @@ async function boot() {
     if (!directoryOnly) await Store.bootstrapStorage();
     if (hadSession && !Store.currentUser()) notify("Sua sessão terminou. Entre novamente com a mesma senha.");
     let fullStore = directoryOnly ? null : Promise.resolve();
+    let coverWorkerRequested = false;
     startRouter(async (route, active) => {
       if (!route.parts.length || route.parts[0] === "home") return render(route, active);
+      if (!coverWorkerRequested && navigator.serviceWorker &&
+          ["livros", "albuns", "pagina", "livro", "album"].includes(route.parts[0])) {
+        coverWorkerRequested = true;
+        navigator.serviceWorker.register("/cover-cache.js").catch(() => {});
+      }
       fullStore ??= Store.refreshUsers().catch(error => {
         fullStore = null;
         throw error;

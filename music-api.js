@@ -2,8 +2,6 @@ import { read, write } from "./storage.js";
 import { cacheAlbums, getAlbum, albumCatalog } from "./album-store.js";
 const KEY = "booksite_music_api_cache",
   TTL = 3600000;
-let queue = Promise.resolve(),
-  last = 0;
 const pending = new Map();
 const artist = (credit) =>
   (credit || [])
@@ -16,36 +14,27 @@ const clean = (s) =>
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 const https = (url) => String(url || "").replace(/^http:/, "https:");
-async function json(url, musicbrainz = false) {
+async function json(url) {
   const cached = read(KEY, {})[url];
   if (cached && Date.now() - cached.time < TTL) return cached.data;
   if (pending.has(url)) return pending.get(url);
-  const task = queue
-    .catch(() => {})
-    .then(async () => {
-      if (musicbrainz) {
-        const delay = 1100 - (Date.now() - last);
-        if (delay > 0)
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        last = Date.now();
-      }
-      const response = await fetch(url, { signal: AbortSignal.timeout(22000) });
-      if (!response.ok)
-        throw new Error(`Serviço musical respondeu ${response.status}.`);
-      const data = await response.json();
-      try {
-        write(KEY, {
-          ...Object.fromEntries(
-            Object.entries(read(KEY, {}))
-              .filter(([, e]) => Date.now() - e.time < TTL)
-              .slice(-80),
-          ),
-          [url]: { time: Date.now(), data },
-        });
-      } catch {}
-      return data;
-    });
-  queue = task;
+  const task = (async () => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(22000) });
+    if (!response.ok)
+      throw new Error(`Serviço musical respondeu ${response.status}.`);
+    const data = await response.json();
+    try {
+      write(KEY, {
+        ...Object.fromEntries(
+          Object.entries(read(KEY, {}))
+            .filter(([, e]) => Date.now() - e.time < TTL)
+            .slice(-80),
+        ),
+        [url]: { time: Date.now(), data },
+      });
+    } catch {}
+    return data;
+  })();
   pending.set(url, task);
   try {
     return await task;
@@ -56,7 +45,6 @@ async function json(url, musicbrainz = false) {
 const mb = (resource, params = {}) =>
   json(
     "/catalog-api/musicbrainz?" + new URLSearchParams({ resource, ...params }),
-    true,
   );
 export function normalizeAlbum(group) {
   return {

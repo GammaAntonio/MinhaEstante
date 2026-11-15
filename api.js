@@ -25,12 +25,15 @@ async function fetchJSON(url) {
     if (globalThis.navigator?.onLine === false)
       throw new Error('Você está offline. Os livros já consultados continuam disponíveis.');
     // A API pública da Open Library pede moderação; não fazer buscas a cada tecla.
-    const operation = queue
+    const openLibrary = new URL(url).hostname === "openlibrary.org";
+    const operation = (openLibrary ? queue : Promise.resolve())
       .catch(() => {})
       .then(async () => {
-        const delay = 1100 - (Date.now() - lastRequest);
-        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-        lastRequest = Date.now();
+        if (openLibrary) {
+          const delay = 1100 - (Date.now() - lastRequest);
+          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+          lastRequest = Date.now();
+        }
         const controller = new AbortController(),
           timer = setTimeout(() => controller.abort(), 14000);
         try {
@@ -56,7 +59,7 @@ async function fetchJSON(url) {
           clearTimeout(timer);
         }
       });
-    queue = operation;
+    if (openLibrary) queue = operation;
     return operation;
   })();
   pending.set(url, task);

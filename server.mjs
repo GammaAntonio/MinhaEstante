@@ -43,7 +43,7 @@ const publicFiles = new Set([
   "identity.js", "media-hub.js", "media-stage.js", "mp3-validation.js", "music-api.js",
   "music.js", "navigation-motion.js", "page-assets.js", "page-media.js", "personal.js",
   "player-visualizer.js", "router.js", "sticker-data.js", "stickers.js", "storage.js",
-  "ui.js", "webmcp.js",
+  "ui.js", "webmcp.js", "cover-cache.js",
 ]);
 
 const types = {
@@ -1351,7 +1351,7 @@ const server = http.createServer(async (req, res) => {
     if (await accountApi(req, res, url)) return;
     if (await socialApi(req, res, url)) return;
     if (await persistenceApi(req, res, url)) return;
-    if (await musicProxy(req, res, url)) return;
+    if (await musicProxy(req, res, url, path.join(dataDir, "catalog-cache"))) return;
 
     const pathname = decodeURIComponent(url.pathname);
     if (/(?:^|\/)(?:\.[^/]+|data|database|scripts|node_modules)(?:\/|$)/.test(pathname.replaceAll("\\", "/"))) {
