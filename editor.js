@@ -151,7 +151,7 @@ export function imageEditor(label, value, onChange) {
   url.addEventListener("change", () => {
     const v = url.value.trim();
     if (v && !safeURL(v, { image: true })) {
-      notify("Use uma URL http ou https válida.", true);
+      notify("Use um endereço que comece com http:// ou https://.", true);
       return;
     }
     onChange(v);
@@ -224,7 +224,7 @@ export function renderEditor(user, initialMedia = "books") {
     const target = otherMedia();
     if (!(await confirmAction(`Aplicar esta seção de ${mediaName()} também em ${mediaName(target)}?`))) return;
     copyVariantSection(draft, media, target, which);
-    notify(`${which === "advanced" ? "Base" : "Seção"} copiada para ${mediaName(target)}.`);
+    notify(`${which === "advanced" ? "Código copiado" : "Seção copiada"} para ${mediaName(target)}.`);
   };
   const padronizeAll = async () => {
     saveCurrentVariant();
@@ -269,7 +269,7 @@ export function renderEditor(user, initialMedia = "books") {
       !draft.music.fileId &&
       !audioURL(draft.music.url)
     )
-      throw new Error("Coloque um arquivo MP3 ou marque Não tocar música.");
+      throw new Error("Adicione um MP3 ou desative a música da página.");
     const saved = prepareSavedPage();
     updateUser(user.id, (u) => {
       u.page = saved;
@@ -739,7 +739,7 @@ export function renderEditor(user, initialMedia = "books") {
       });
       body.append(
         h("h3", {}, "adicionar música"),
-        h("p", {}, "Uma música para acompanhar quem visita seu pequeno mundo."),
+        h("p", {}, "Escolha a música do seu perfil."),
         field(
           "Colocar arquivo MP3",
           upload,
@@ -761,7 +761,7 @@ export function renderEditor(user, initialMedia = "books") {
             if (musicUploading)
               throw new Error("Aguarde o MP3 terminar de carregar.");
             if (!music.fileId && !audioURL(music.url))
-              throw new Error("Coloque um arquivo MP3 primeiro.");
+              throw new Error("Adicione um MP3 primeiro.");
             previewHost.replaceChildren(
               renderMusic({ ...music, enabled: true }),
             );
@@ -870,7 +870,7 @@ export function renderEditor(user, initialMedia = "books") {
         status.textContent = "Enviando imagem…";
         try {
           await uploadPageAsset(file);
-          notify("Imagem enviada. A URL já pode ser usada no HTML/CSS.");
+          notify("Imagem enviada. Copie o endereço para usar no HTML ou no CSS.");
           await renderAssets();
         } finally {
           busy = false;
@@ -1106,7 +1106,7 @@ export function renderEditor(user, initialMedia = "books") {
         { class: "toolbar" },
         button("restaurar versão anterior", async () => {
           if (!code.previousVersion) {
-            notify("Ainda não existe versão anterior.");
+            notify("Ainda não há uma versão anterior para recuperar.");
             return;
           }
           if (await confirmAction("Restaurar a versão anterior do código?")) {

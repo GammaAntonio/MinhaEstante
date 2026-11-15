@@ -85,7 +85,7 @@ async function uploadMP3ToServer(file) {
   if (!response.ok)
     throw new Error(payload.error || 'Não foi possível enviar o MP3 ao servidor.');
   if (!/^server:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.fileId || ''))
-    throw new Error('O servidor não confirmou uma referência persistente para o MP3.');
+    throw new Error('O servidor não confirmou o envio do MP3.');
   return { fileId: payload.fileId, fileName: file.name.split(/[\\/]/).pop() };
 }
 
@@ -100,7 +100,7 @@ export async function uploadMP3(file) {
   try {
     return await uploadMP3ToServer(file);
   } catch (cause) {
-    throw new Error('Não foi possível salvar o MP3. Verifique se o MinhaEstante foi iniciado pelo servidor local.', { cause });
+    throw new Error('Não foi possível salvar o MP3. Confira a conexão e tente novamente.', { cause });
   }
 }
 async function storedAudio(fileId) {
