@@ -84,8 +84,8 @@ async function uploadMP3ToServer(file) {
 export async function uploadMP3(file) {
   if (!file || !/\.mp3$/i.test(file.name))
     throw new Error("Escolha um arquivo MP3.");
-  if (!file.size || file.size > 55 * 1024 * 1024)
-    throw new Error("Escolha um MP3 de até 55 MB.");
+  if (!file.size || file.size > 50 * 1024 * 1024)
+    throw new Error("Escolha um MP3 de até 50 MB.");
   const bytes = new Uint8Array(await file.slice(0, 4).arrayBuffer());
   if (!hasMP3Signature(bytes))
     throw new Error("Esse arquivo não parece ser um MP3 válido.");

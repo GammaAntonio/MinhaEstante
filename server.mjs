@@ -6,20 +6,23 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { musicProxy } from "./music-proxy.mjs";
 import { blankUser } from "./data.js";
-import { hasMP3Signature } from "./mp3-validation.js";
+import { normalizeImage, validateMp3 } from "./media-validation.mjs";
 import {
   authRecord,
   clearSessionCookie,
   cookieValue,
-  createSessionToken,
   hashPassword,
+  newSessionToken,
+  sanitizePublicProfile,
   sanitizeUser,
   sessionCookie,
+  sessionTokenDigest,
+  SESSION_TTL_SECONDS,
   verifyPassword,
-  verifySessionToken,
 } from "./auth.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -33,31 +36,130 @@ const pageAssetsDir = path.join(dataDir, "page-assets");
 
 let creatorUserId = "";
 
+const publicFiles = new Set([
+  "index.html", "favicon.svg", "Album-MP3.png", "styles.css", "collection.css",
+  "advanced.js", "album-pages.js", "album-store.js", "api.js", "app.js", "config.js",
+  "creator-playlist-editor.js", "creator-playlist.js", "data.js", "editor.js",
+  "identity.js", "media-hub.js", "media-stage.js", "mp3-validation.js", "music-api.js",
+  "music.js", "navigation-motion.js", "page-assets.js", "page-media.js", "personal.js",
+  "player-visualizer.js", "router.js", "sticker-data.js", "stickers.js", "storage.js",
+  "ui.js", "webmcp.js",
+]);
+
 const types = {
   ".html": "text/html",
   ".js": "text/javascript",
-  ".mjs": "text/javascript",
   ".css": "text/css",
   ".svg": "image/svg+xml",
-  ".json": "application/json",
-  ".md": "text/plain",
-  ".mp3": "audio/mpeg",
-  ".ogg": "audio/ogg",
-  ".wav": "audio/wav",
-  ".m4a": "audio/mp4",
+  ".png": "image/png",
 };
+
+// Node only listens on loopback. Caddy replaces X-Forwarded-Proto.
+const isHttps = (req) => req.headers["x-forwarded-proto"] === "https";
+
+function isCrossOriginMutation(req, url) {
+  if (!url.pathname.startsWith("/api/") || ["GET", "HEAD", "OPTIONS"].includes(req.method)) return false;
+  const site = req.headers["sec-fetch-site"];
+  if (site === "cross-site" || site === "same-site") return true;
+  const origin = req.headers.origin;
+  return origin !== undefined && origin !== `${isHttps(req) ? "https" : "http"}://${req.headers.host}`;
+}
+
+const authLimits = new Map([
+  ["/api/auth/login", 10],
+  ["/api/auth/register", 5],
+  ["/api/account/password", 10],
+  ["/api/auth/password-reset/request", 4],
+  ["/api/auth/password-reset/confirm", 10],
+  ["/api/account/deletion-request", 5],
+]);
+const authAttempts = new Map();
+const authWindowMs = 60_000;
+let authWindow = -1;
+
+function authRetryAfter(req, url) {
+  const limit = req.method === "POST" && authLimits.get(url.pathname);
+  if (!limit) return 0;
+  const now = Date.now();
+  const window = Math.floor(now / authWindowMs);
+  if (window !== authWindow) {
+    authAttempts.clear();
+    authWindow = window;
+  }
+  // Caddy supplies this address after removing untrusted forwarded headers.
+  const forwarded = req.headers["x-forwarded-for"];
+  const client = isHttps(req) && typeof forwarded === "string" && isIP(forwarded)
+    ? forwarded : req.socket.remoteAddress;
+  const key = `${url.pathname}:${client}`;
+  const attempts = authAttempts.get(key) || 0;
+  if (attempts >= limit || (!attempts && authAttempts.size >= 4096))
+    return Math.ceil(((window + 1) * authWindowMs - now) / 1000);
+  authAttempts.set(key, attempts + 1);
+  return 0;
+}
 
 const repository = createRepository();
 const withDataMutation = repository.transaction;
 const writeRecords = repository.write;
 
-async function saveMedia(file, kind, body) {
-  await fsp.writeFile(file, body, { flag: "wx" });
+const MiB = 1024 * 1024;
+function storageLimit(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+const mediaLimits = {
+  audioFile: 50 * MiB, imageFile: 5 * MiB,
+  audioCount: storageLimit("MEDIA_AUDIO_COUNT", 20),
+  imageCount: storageLimit("MEDIA_IMAGE_COUNT", 300),
+  imageBytes: storageLimit("MEDIA_IMAGES_MIB", 100) * MiB,
+  totalBytes: storageLimit("MEDIA_ACCOUNT_MIB", 500) * MiB,
+  instanceBytes: storageLimit("MEDIA_INSTANCE_MIB", 512) * MiB,
+};
+let uploadActive = false;
+
+async function guardedUpload(task) {
+  if (uploadActive) {
+    throw Object.assign(new Error("Aguarde o término do envio em andamento."), { statusCode: 429 });
+  }
+  uploadActive = true;
+  try { return await task(); }
+  finally { uploadActive = false; }
+}
+
+async function saveMedia(req, user, file, kind, body) {
+  let created = false;
   try {
-    await repository.query("INSERT INTO media_files VALUES ($1,$2,$3)",
-      [path.relative(dataDir,file).split(path.sep).join("/"),kind,body.length]);
+    await withDataMutation(async () => {
+      if (!(await requestUser(req, [user]))) {
+        throw Object.assign(new Error("Sua sessão expirou. Entre novamente."), { statusCode: 401 });
+      }
+      const { rows: [used] } = await repository.query(`SELECT
+        count(*) FILTER (WHERE owner_id = $1 AND kind = $2)::int AS kind_count,
+        coalesce(sum(size_bytes) FILTER (WHERE owner_id = $1 AND kind = $2), 0)::bigint AS kind_bytes,
+        coalesce(sum(size_bytes) FILTER (WHERE owner_id = $1), 0)::bigint AS owner_bytes,
+        coalesce(sum(size_bytes), 0)::bigint AS instance_bytes
+        FROM media_files`, [user.id, kind]);
+      if (used.kind_count >= (kind === "audio" ? mediaLimits.audioCount : mediaLimits.imageCount) ||
+          Number(used.owner_bytes) + body.length > mediaLimits.totalBytes ||
+          (kind === "image" && Number(used.kind_bytes) + body.length > mediaLimits.imageBytes)) {
+        throw Object.assign(new Error("Limite de armazenamento da sua conta atingido."), { statusCode: 409 });
+      }
+      const disk = await fsp.statfs(dataDir);
+      if (Number(used.instance_bytes) + body.length > mediaLimits.instanceBytes ||
+          disk.bavail * disk.bsize - body.length < 3 * 1024 * MiB) {
+        throw Object.assign(new Error("Armazenamento de mídia temporariamente indisponível."), { statusCode: 409 });
+      }
+      await fsp.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      const handle = await fsp.open(file, "wx", 0o600);
+      created = true;
+      try { await handle.writeFile(body); await handle.sync(); }
+      finally { await handle.close(); }
+      await repository.query("INSERT INTO media_files(path, kind, size_bytes, owner_id) VALUES ($1,$2,$3,$4)",
+        [path.relative(dataDir,file).split(path.sep).join("/"),kind,body.length,user.id]);
+    });
   } catch (error) {
-    await fsp.unlink(file).catch(() => {});
+    if (created) await fsp.unlink(file).catch(() => {});
     throw error;
   }
 }
@@ -72,13 +174,17 @@ async function fileExists(file) {
 }
 
 let dataReadyPromise;
-let signingSecret;
+const dummyPasswordHash = hashPassword(randomUUID());
 async function ensureDataDirs() {
   dataReadyPromise ??= (async () => {
-    const { rows } = await repository.query("SELECT session_secret,creator_id FROM app_state");
+    const { rows } = await repository.query("SELECT creator_id FROM app_state");
     if (!rows.length) throw Error("Banco não inicializado. Execute a migração.");
     await repository.query("SELECT 1 FROM catalog_snapshots LIMIT 0");
-    signingSecret = rows[0].session_secret;
+    await repository.query("SELECT 1 FROM auth_sessions LIMIT 0");
+    await repository.query("SELECT 1 FROM password_resets LIMIT 0");
+    await repository.query("SELECT 1 FROM account_privacy LIMIT 0");
+    await repository.query("SELECT 1 FROM account_deletion_requests LIMIT 0");
+    await repository.query("SELECT owner_id FROM media_files LIMIT 0");
     creatorUserId = rows[0].creator_id;
     await fsp.mkdir(audioDir, {recursive:true});
     await fsp.mkdir(pageAssetsDir, {recursive:true});
@@ -135,35 +241,32 @@ function accountRecord(user, values = {}) {
   };
 }
 
-function validateAccountInput(payload, { registration = false } = {}) {
+function validateAccountInput(payload) {
   const fullName = String(payload?.fullName || payload?.name || "").trim();
   const birthDate = String(payload?.birthDate || "").trim();
   const city = String(payload?.city || "").trim();
   const email = normalizeEmail(payload?.email);
   const phone = normalizePhone(payload?.phone);
-  const passwordHint = String(payload?.passwordHint || "").trim();
   const age = ageFromBirthDate(birthDate);
   if (fullName.length < 2 || fullName.length > 100)
     throw Object.assign(new Error("Informe seu nome completo (2 a 100 caracteres)."), { statusCode: 400 });
   if (age === null || age < 14)
     throw Object.assign(new Error("O MinhaEstante aceita cadastros a partir de 14 anos."), { statusCode: 400 });
-  if (!city || city.length > 100)
-    throw Object.assign(new Error("Informe sua cidade (até 100 caracteres)."), { statusCode: 400 });
+  if (city.length > 100)
+    throw Object.assign(new Error("A cidade deve ter até 100 caracteres."), { statusCode: 400 });
   if (!validEmail(email))
     throw Object.assign(new Error("Informe um e-mail válido."), { statusCode: 400 });
-  if (phone.length < 10 || phone.length > 15)
+  if (phone && (phone.length < 10 || phone.length > 15))
     throw Object.assign(new Error("Informe um telefone válido com DDD."), { statusCode: 400 });
-  if (passwordHint.length > 160)
-    throw Object.assign(new Error("A dica da senha deve ter no máximo 160 caracteres."), { statusCode: 400 });
-  return { fullName, birthDate, city, email, phone, passwordHint, age, registration };
+  return { fullName, birthDate, city, email, phone };
 }
 
-function sessionSecret() { return signingSecret; }
-
 async function readBody(req, maxBytes = 8 * 1024 * 1024) {
+  if (Number(req.headers["content-length"]) > maxBytes)
+    throw Object.assign(new Error("Corpo da requisição excede o limite."), { statusCode: 413 });
   const chunks = [];
   let size = 0;
-  for await (const chunk of req) {
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
     if (size > maxBytes) {
       const error = new Error("Corpo da requisição excede o limite.");
@@ -197,12 +300,24 @@ function json(res, status, value, headers = {}) {
 }
 
 async function requestUser(req, all = null) {
-  const token = cookieValue(req, "booksite_session");
-  if (!token) return null;
-  const payload = verifySessionToken(token, await sessionSecret());
-  if (!payload) return null;
-  const users = all || (await readUsersFile());
-  return users.find((user) => String(user.id) === payload.userId) || null;
+  const digest = sessionTokenDigest(cookieValue(req, "booksite_session"));
+  if (!digest) return null;
+  const { rows: [session] } = await repository.query(
+    "SELECT user_id FROM auth_sessions WHERE token_digest = $1 AND expires_at > now()", [digest],
+  );
+  if (!session) return null;
+  const users = all || await repository.readUsers({ userId: session.user_id });
+  return users.find(user => String(user.id) === session.user_id) || null;
+}
+
+async function issueSession(userId) {
+  const token = newSessionToken();
+  await repository.query("DELETE FROM auth_sessions WHERE expires_at <= now()");
+  await repository.query(
+    "INSERT INTO auth_sessions(token_digest, user_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3))",
+    [sessionTokenDigest(token), userId, SESSION_TTL_SECONDS],
+  );
+  return token;
 }
 
 function socialSummary(userId, friendships = []) {
@@ -219,9 +334,9 @@ function socialSummary(userId, friendships = []) {
   return { friendCount: friendIds.length, friendIds };
 }
 
-function publicUser(user, friendships = []) {
+function publicUser(user, friendships = [], viewerId = null) {
   if (!user) return null;
-  const clean = sanitizeUser(user);
+  const clean = String(user.id) === viewerId ? sanitizeUser(user) : sanitizePublicProfile(user);
   return {
     ...clean,
     isCreator: !!creatorUserId && String(user.id) === creatorUserId,
@@ -229,8 +344,52 @@ function publicUser(user, friendships = []) {
   };
 }
 
-function publicUsers(users, friendships = []) {
-  return (Array.isArray(users) ? users : []).map((user) => publicUser(user, friendships));
+function publicUsers(users, friendships = [], viewerId = null) {
+  return (Array.isArray(users) ? users : []).map((user) => publicUser(user, friendships, viewerId));
+}
+
+async function visibleFriendships(friendships, viewerId = null) {
+  const { rows } = await repository.query("SELECT user_id FROM account_privacy WHERE hide_friends");
+  const hidden = new Set(rows.map(row => row.user_id));
+  return friendships.filter(({ requesterId, receiverId }) =>
+    viewerId === requesterId || viewerId === receiverId || (!hidden.has(requesterId) && !hidden.has(receiverId)));
+}
+
+function passwordResetOrigin() {
+  try {
+    const url = new URL(process.env.PASSWORD_RESET_ORIGIN);
+    return url.protocol === "https:" && !url.username && !url.password ? url.origin : "";
+  } catch { return ""; }
+}
+
+async function queuePasswordReset(email, origin) {
+  const token = newSessionToken();
+  const found = await withDataMutation(async () => {
+    await repository.query("DELETE FROM password_resets WHERE expires_at <= now()");
+    const { rowCount } = await repository.query(`
+      INSERT INTO password_resets(user_id, token_digest, expires_at)
+      SELECT user_id, $2, now() + interval '30 minutes' FROM accounts
+      WHERE lower(email) = $1 AND email <> ''
+      ON CONFLICT(user_id) DO UPDATE SET token_digest = excluded.token_digest,
+        requested_at = now(), expires_at = excluded.expires_at
+      WHERE password_resets.requested_at < now() - interval '2 minutes'`, [email, sessionTokenDigest(token)]);
+    return rowCount > 0;
+  });
+  if (!found) return;
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST", redirect: "error", signal: AbortSignal.timeout(8000),
+    headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from: process.env.WELCOME_FROM_EMAIL, to: [email],
+      subject: "Redefina sua senha do MinhaEstante",
+      text: `Abra ${origin}/#/redefinir-senha?token=${token} para redefinir a senha em até 30 minutos. Se você não fez esse pedido, ignore esta mensagem.`,
+    }),
+  });
+  await response.body?.cancel();
+  if (!response.ok) {
+    await repository.query("DELETE FROM password_resets WHERE token_digest = $1", [sessionTokenDigest(token)]);
+    throw new Error("Falha no envio");
+  }
 }
 
 function mergeUserData(existing, incoming) {
@@ -266,6 +425,8 @@ async function sendWelcomeEmail(account, user) {
   try {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(8000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -280,7 +441,7 @@ async function sendWelcomeEmail(account, user) {
     if (!response.ok) console.warn("MinhaEstante: e-mail de boas-vindas não enviado.", response.status);
     return response.ok;
   } catch (error) {
-    console.warn("MinhaEstante: falha no e-mail de boas-vindas.", error?.message || error);
+    console.warn("MinhaEstante: falha no e-mail de boas-vindas.", error?.name);
     return false;
   }
 }
@@ -291,8 +452,53 @@ async function authApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
     const user = await requestUser(req);
-    const friendships = await readFriendshipsFile();
-    json(res, 200, { user: publicUser(user, friendships) });
+    const friendships = await visibleFriendships(await readFriendshipsFile(), user?.id);
+    json(res, 200, { user: publicUser(user, friendships, user && String(user.id)) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/password-reset") {
+    json(res, 200, { enabled: Boolean(passwordResetOrigin() && process.env.RESEND_API_KEY && process.env.WELCOME_FROM_EMAIL) });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/password-reset/request") {
+    const { email } = await readJsonBody(req, 4096) || {};
+    const normalized = normalizeEmail(email);
+    const origin = passwordResetOrigin();
+    if (!origin || !process.env.RESEND_API_KEY || !process.env.WELCOME_FROM_EMAIL) {
+      json(res, 503, { error: "A recuperação por e-mail está indisponível no momento." });
+      return true;
+    }
+    if (validEmail(normalized)) {
+      const requestId = res.getHeader("X-Request-Id");
+      void queuePasswordReset(normalized, origin).catch(() => {
+        console.warn(JSON.stringify({ event: "password_reset_delivery_failed", requestId }));
+      });
+    }
+    json(res, 202, { ok: true });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/password-reset/confirm") {
+    const { token, password } = await readJsonBody(req, 4096) || {};
+    const digest = sessionTokenDigest(token);
+    if (!digest || typeof password !== "string" || password.length < 6 || password.length > 200) {
+      json(res, 400, { error: "Confira o link e use uma senha de 6 a 200 caracteres." });
+      return true;
+    }
+    const changed = await withDataMutation(async () => {
+      const { rows: [reset] } = await repository.query(
+        "DELETE FROM password_resets WHERE token_digest = $1 AND expires_at > now() RETURNING user_id", [digest],
+      );
+      if (!reset) return false;
+      await repository.query("UPDATE credentials SET password_hash = $2 WHERE user_id = $1",
+        [reset.user_id, await hashPassword(password)]);
+      await repository.query("DELETE FROM auth_sessions WHERE user_id = $1", [reset.user_id]);
+      return true;
+    });
+    json(res, changed ? 200 : 400, changed ? { ok: true } : { error: "Link inválido ou expirado." },
+      changed ? { "Set-Cookie": clearSessionCookie(isHttps(req)) } : {});
     return true;
   }
 
@@ -300,33 +506,37 @@ async function authApi(req, res, url) {
     const payload = await readJsonBody(req, 32 * 1024);
     const identifier = String(payload?.identifier || payload?.username || "").trim().toLowerCase();
     const password = String(payload?.password || "");
-    const users = await readUsersFile();
-    const accounts = await readAccountsFile();
-    const accountByEmail = accounts.find((item) => item.email && item.email === identifier);
-    const user = accountByEmail
-      ? users.find((item) => String(item.id) === String(accountByEmail.userId))
-      : users.find((item) => item.username === identifier);
-    const account = user && accounts.find((item) => String(item.userId) === String(user.id));
-    const auth = await readAuthFile();
-    const record = user && auth.find((item) => String(item.userId) === String(user.id));
-    if (!user || !record) {
-      json(res, 401, { error: "Conta não encontrada." });
+    const { rows: [record] } = await repository.query(
+      `SELECT user_id, password_hash FROM credentials WHERE user_id = COALESCE(
+        (SELECT user_id FROM accounts WHERE lower(email) = $1 AND email <> ''),
+        (SELECT id FROM users WHERE username = $1))`,
+      [identifier],
+    );
+    const valid = password.length <= 200 &&
+      await verifyPassword(password, record?.password_hash || await dummyPasswordHash);
+    if (!record || !valid) {
+      json(res, 401, { error: "E-mail, nome de usuário ou senha inválidos." });
       return true;
     }
-    if (!(await verifyPassword(password, record.passwordHash))) {
-      json(res, 401, {
-        error: "Senha incorreta.",
-        hint: String(account?.passwordHint || ""),
-      });
+    const authenticated = await withDataMutation(async () => {
+      const { rowCount } = await repository.query(
+        "SELECT 1 FROM credentials WHERE user_id = $1 AND password_hash = $2", [record.user_id, record.password_hash],
+      );
+      if (!rowCount) return null;
+      const [user] = await repository.readUsers({ userId: record.user_id });
+      return { user, token: await issueSession(user.id) };
+    });
+    if (!authenticated) {
+      json(res, 401, { error: "E-mail, nome de usuário ou senha inválidos." });
       return true;
     }
-    const token = createSessionToken(user.id, await sessionSecret());
-    const friendships = await readFriendshipsFile();
+    const { user, token } = authenticated;
+    const friendships = await visibleFriendships(await readFriendshipsFile(), user.id);
     json(
       res,
       200,
-      { user: publicUser(user, friendships) },
-      { "Set-Cookie": sessionCookie(token) },
+      { user: publicUser(user, friendships, String(user.id)) },
+      { "Set-Cookie": sessionCookie(token, isHttps(req)) },
     );
     return true;
   }
@@ -350,7 +560,7 @@ async function authApi(req, res, url) {
     }
     let accountData;
     try {
-      accountData = validateAccountInput(payload, { registration: true });
+      accountData = validateAccountInput(payload);
     } catch (error) {
       json(res, error.statusCode || 400, { error: error.message });
       return true;
@@ -369,7 +579,7 @@ async function authApi(req, res, url) {
         error.statusCode = 409;
         throw error;
       }
-      const created = blankUser(username, accountData.fullName);
+      const created = blankUser(username, username);
       const auth = await readAuthFile();
       const passwordHash = await hashPassword(password);
       const createdAccount = accountRecord(created, accountData);
@@ -379,23 +589,24 @@ async function authApi(req, res, url) {
       await writeRecords(authFile, auth);
       await writeRecords(usersFile, users);
       await writeRecords(accountsFile, accounts);
-      return { user: created, account: createdAccount };
+      return { user: created, account: createdAccount, token: await issueSession(created.id) };
     });
 
     void sendWelcomeEmail(result.account, result.user);
-    const token = createSessionToken(result.user.id, await sessionSecret());
     const friendships = await readFriendshipsFile();
     json(
       res,
       201,
       { user: publicUser(result.user, friendships) },
-      { "Set-Cookie": sessionCookie(token) },
+      { "Set-Cookie": sessionCookie(result.token, isHttps(req)) },
     );
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-    json(res, 200, { ok: true }, { "Set-Cookie": clearSessionCookie() });
+    const digest = sessionTokenDigest(cookieValue(req, "booksite_session"));
+    if (digest) await repository.query("DELETE FROM auth_sessions WHERE token_digest = $1", [digest]);
+    json(res, 200, { ok: true }, { "Set-Cookie": clearSessionCookie(isHttps(req)) });
     return true;
   }
 
@@ -422,6 +633,28 @@ async function accountApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/account/export") {
+    const userId = String(user.id);
+    const accounts = await readAccountsFile();
+    const friendships = await readFriendshipsFile();
+    const pageAssets = await listPageAssetsFor(user);
+    const { rows: media } = await repository.query(
+      "SELECT kind, path, size_bytes FROM media_files WHERE owner_id = $1 ORDER BY path", [userId],
+    );
+    const privacy = await accountSafety(userId);
+    json(res, 200, {
+      exportedAt: new Date().toISOString(),
+      account: accounts.find(item => String(item.userId) === userId) || null,
+      profile: sanitizeUser(user),
+      friendships: friendships.filter(item =>
+        String(item.requesterId) === userId || String(item.receiverId) === userId),
+      pageAssets,
+      media,
+      privacy,
+    }, { "Content-Disposition": 'attachment; filename="minhaestante-dados.json"' });
+    return true;
+  }
+
   if (req.method === "PUT" && url.pathname === "/api/account") {
     const payload = await readJsonBody(req, 64 * 1024);
     let nextData;
@@ -445,7 +678,15 @@ async function accountApi(req, res, url) {
         throw error;
       }
       const index = accounts.findIndex((item) => String(item.userId) === String(user.id));
-      const next = accountRecord(user, nextData);
+      const next = accountRecord(user, { ...nextData, passwordHint: accounts[index]?.passwordHint });
+      if (accounts[index]?.email !== next.email) {
+        const { rows: [credential] } = await repository.query("SELECT password_hash FROM credentials WHERE user_id = $1", [user.id]);
+        if (typeof payload.currentPassword !== "string" || payload.currentPassword.length > 200 ||
+            !(await verifyPassword(payload.currentPassword, credential?.password_hash))) {
+          throw Object.assign(new Error("Confirme a senha atual para trocar o e-mail."), { statusCode: 403 });
+        }
+        await repository.query("DELETE FROM password_resets WHERE user_id = $1", [user.id]);
+      }
       if (index >= 0) accounts[index] = next;
       else accounts.push(next);
       await writeRecords(accountsFile, accounts);
@@ -455,8 +696,53 @@ async function accountApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/account/privacy") {
+    json(res, 200, await accountSafety(user.id));
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/account/storage") {
+    const { rows } = await repository.query(
+      "SELECT kind, count(*)::int AS count, sum(size_bytes)::bigint AS bytes FROM media_files WHERE owner_id = $1 GROUP BY kind", [user.id],
+    );
+    json(res, 200, {
+      usage: Object.fromEntries(rows.map(row => [row.kind, { count: row.count, bytes: Number(row.bytes) }])),
+      limits: { audioCount: mediaLimits.audioCount, imageCount: mediaLimits.imageCount,
+        imageBytes: mediaLimits.imageBytes, totalBytes: mediaLimits.totalBytes },
+    });
+    return true;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/account/privacy") {
+    const { hideFriends } = await readJsonBody(req, 4096) || {};
+    if (typeof hideFriends !== "boolean") {
+      json(res, 400, { error: "Escolha a visibilidade da lista de amigos." });
+      return true;
+    }
+    await repository.query(`INSERT INTO account_privacy(user_id, hide_friends) VALUES ($1,$2)
+      ON CONFLICT(user_id) DO UPDATE SET hide_friends = excluded.hide_friends`, [user.id, hideFriends]);
+    json(res, 200, await accountSafety(user.id));
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/account/deletion-request") {
+    const { password } = await readJsonBody(req, 4096) || {};
+    const safety = await withDataMutation(async () => {
+      const { rows: [credential] } = await repository.query("SELECT password_hash FROM credentials WHERE user_id = $1", [user.id]);
+      if (!(await requestUser(req, [user])) || typeof password !== "string" || password.length > 200 ||
+          !(await verifyPassword(password, credential?.password_hash))) return null;
+      await repository.query(
+        "INSERT INTO account_deletion_requests(user_id) VALUES ($1) ON CONFLICT(user_id) DO NOTHING", [user.id],
+      );
+      return accountSafety(user.id);
+    });
+    json(res, safety ? 202 : 403, safety || { error: "Confirme a senha atual para solicitar a exclusão." });
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/account/password") {
     const payload = await readJsonBody(req, 16 * 1024);
+    const currentPassword = String(payload?.currentPassword || "");
     const newPassword = String(payload?.newPassword || "");
     const confirmPassword = String(payload?.confirmPassword || "");
     if (newPassword.length < 6 || newPassword.length > 200) {
@@ -467,23 +753,41 @@ async function accountApi(req, res, url) {
       json(res, 400, { error: "A confirmação da nova senha não confere." });
       return true;
     }
-    await withDataMutation(async () => {
-      const auth = await readAuthFile();
-      const index = auth.findIndex((item) => String(item.userId) === String(user.id));
-      if (index < 0) {
+    const token = await withDataMutation(async () => {
+      if (!(await requestUser(req, [user]))) {
+        throw Object.assign(new Error("Sua sessão expirou. Entre novamente."), { statusCode: 401 });
+      }
+      const { rows: [credential] } = await repository.query(
+        "SELECT password_hash FROM credentials WHERE user_id = $1", [user.id],
+      );
+      if (!credential) {
         const error = new Error("Credencial da conta não encontrada.");
         error.statusCode = 404;
         throw error;
       }
-      auth[index] = authRecord(user, await hashPassword(newPassword));
-      await writeRecords(authFile, auth);
+      if (!currentPassword || currentPassword.length > 200 ||
+          !(await verifyPassword(currentPassword, credential.password_hash))) {
+        throw Object.assign(new Error("Senha atual incorreta."), { statusCode: 403 });
+      }
+      await repository.query("UPDATE credentials SET password_hash = $2 WHERE user_id = $1",
+        [user.id, await hashPassword(newPassword)]);
+      await repository.query("DELETE FROM auth_sessions WHERE user_id = $1", [user.id]);
+      await repository.query("DELETE FROM password_resets WHERE user_id = $1", [user.id]);
+      return issueSession(user.id);
     });
-    json(res, 200, { ok: true });
+    json(res, 200, { ok: true }, { "Set-Cookie": sessionCookie(token, isHttps(req)) });
     return true;
   }
 
   json(res, 404, { error: "Endpoint da conta não encontrado." });
   return true;
+}
+
+async function accountSafety(userId) {
+  const { rows: [settings] } = await repository.query(`SELECT
+    coalesce((SELECT hide_friends FROM account_privacy WHERE user_id = $1), false) AS "hideFriends",
+    (SELECT requested_at FROM account_deletion_requests WHERE user_id = $1) AS "deletionRequestedAt"`, [userId]);
+  return settings;
 }
 
 function friendshipBetween(friendships, firstId, secondId) {
@@ -510,12 +814,13 @@ async function socialApi(req, res, url) {
       json(res, 404, { error: "Conta não encontrada." });
       return true;
     }
-    const ids = socialSummary(target.id, friendships).friendIds;
+    const visible = await visibleFriendships(friendships, actor?.id);
+    const ids = socialSummary(target.id, visible).friendIds;
     json(res, 200, {
-      user: publicUser(target, friendships),
+      user: publicUser(target, visible),
       friends: publicUsers(
         ids.map((id) => users.find((item) => String(item.id) === id)).filter(Boolean),
-        friendships,
+        visible,
       ),
     });
     return true;
@@ -550,12 +855,13 @@ async function socialApi(req, res, url) {
       json(res, 401, { error: "Entre para ver solicitações de amizade." });
       return true;
     }
+    const visible = await visibleFriendships(friendships, actor.id);
     const incoming = friendships
       .filter((item) => item.status === "pending" && String(item.receiverId) === String(actor.id))
       .map((item) => ({
         id: item.id,
         createdAt: item.createdAt,
-        user: publicUser(users.find((user) => String(user.id) === String(item.requesterId)), friendships),
+        user: publicUser(users.find((user) => String(user.id) === String(item.requesterId)), visible),
       }))
       .filter((item) => item.user);
     const outgoing = friendships
@@ -563,7 +869,7 @@ async function socialApi(req, res, url) {
       .map((item) => ({
         id: item.id,
         createdAt: item.createdAt,
-        user: publicUser(users.find((user) => String(user.id) === String(item.receiverId)), friendships),
+        user: publicUser(users.find((user) => String(user.id) === String(item.receiverId)), visible),
       }))
       .filter((item) => item.user);
     json(res, 200, { incoming, outgoing });
@@ -697,37 +1003,6 @@ function safeOwnerId(value) {
   return /^[a-z0-9_-]{1,100}$/i.test(value || "") ? value : "";
 }
 
-function pageAssetKind(body) {
-  if (!Buffer.isBuffer(body) || !body.length) return null;
-  if (
-    body.length >= 8 &&
-    body[0] === 0x89 &&
-    body[1] === 0x50 &&
-    body[2] === 0x4e &&
-    body[3] === 0x47 &&
-    body[4] === 0x0d &&
-    body[5] === 0x0a &&
-    body[6] === 0x1a &&
-    body[7] === 0x0a
-  )
-    return { ext: "png", type: "image/png" };
-  if (body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff)
-    return { ext: "jpg", type: "image/jpeg" };
-  if (
-    body.length >= 6 &&
-    (body.subarray(0, 6).toString("ascii") === "GIF87a" ||
-      body.subarray(0, 6).toString("ascii") === "GIF89a")
-  )
-    return { ext: "gif", type: "image/gif" };
-  if (
-    body.length >= 12 &&
-    body.subarray(0, 4).toString("ascii") === "RIFF" &&
-    body.subarray(8, 12).toString("ascii") === "WEBP"
-  )
-    return { ext: "webp", type: "image/webp" };
-  return null;
-}
-
 function decodeHeader(value) {
   try {
     return decodeURIComponent(String(value || ""));
@@ -740,15 +1015,20 @@ async function listPageAssetsFor(user) {
   const ownerId = safeOwnerId(String(user?.id || ""));
   if (!ownerId) return [];
   const dir = path.join(pageAssetsDir, ownerId);
-  await fsp.mkdir(dir, { recursive: true });
-  const names = await fsp.readdir(dir);
+  const names = await fsp.readdir(dir).catch(error => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
   const assets = [];
   for (const name of names) {
     const assetId = safePageAssetId(name);
     if (!assetId) continue;
     const file = path.join(dir, assetId);
-    const stat = await fsp.stat(file);
-    if (!stat.isFile()) continue;
+    const stat = await fsp.lstat(file).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!stat?.isFile()) continue;
     assets.push({
       id: assetId,
       url: `/api/persistence/page-assets/file/${encodeURIComponent(ownerId)}/${encodeURIComponent(assetId)}`,
@@ -817,21 +1097,21 @@ async function persistenceApi(req, res, url) {
       json(res, 401, { error: "Entre para enviar imagens." });
       return true;
     }
-    const body = await readBody(req, 8 * 1024 * 1024);
-    const kind = pageAssetKind(body);
-    if (!kind) {
-      json(res, 400, { error: "Use uma imagem PNG, JPG, WEBP ou GIF válida. SVG não é aceito." });
-      return true;
-    }
     const ownerId = safeOwnerId(String(user.id));
     if (!ownerId) {
       json(res, 400, { error: "Conta inválida para upload de imagem." });
       return true;
     }
-    const dir = path.join(pageAssetsDir, ownerId);
-    await fsp.mkdir(dir, { recursive: true });
-    const assetId = `${randomUUID()}.${kind.ext}`;
-    await saveMedia(path.join(dir, assetId), "image", body);
+    const { assetId, body, kind } = await guardedUpload(async () => {
+      const raw = await readBody(req, mediaLimits.imageFile);
+      const kind = await normalizeImage(raw, req.headers["content-type"]);
+      if (!kind || kind.body.length > mediaLimits.imageFile) {
+        throw Object.assign(new Error("Envie uma imagem PNG, JPG, WEBP ou GIF válida de até 5 MB."), { statusCode: 400 });
+      }
+      const assetId = `${randomUUID()}.${kind.ext}`;
+      await saveMedia(req, user, path.join(pageAssetsDir, ownerId, assetId), "image", kind.body);
+      return { assetId, body: kind.body, kind };
+    });
     const originalName = path.basename(decodeHeader(req.headers["x-file-name"])).slice(0, 180);
     json(res, 201, {
       id: assetId,
@@ -861,12 +1141,24 @@ async function persistenceApi(req, res, url) {
       json(res, 404, { error: "Imagem não encontrada." });
       return true;
     }
-    const staged = file + ".pending-delete";
-    await fsp.rename(file, staged);
+    const relative = path.relative(dataDir, file).split(path.sep).join("/");
+    const staged = file + "." + randomUUID() + ".pending-delete";
+    let moved = false;
     try {
-      await repository.query("DELETE FROM media_files WHERE path=$1", [path.relative(dataDir,file).split(path.sep).join("/")]);
+      await withDataMutation(async () => {
+        const entry = await repository.query("DELETE FROM media_files WHERE path = $1 AND owner_id = $2 AND kind = 'image'", [relative, user.id]);
+        if (!entry.rowCount || !(await requestUser(req, [user]))) {
+          throw Object.assign(new Error("Imagem não encontrada."), { statusCode: 404 });
+        }
+        const [realRoot, realFile, stat] = await Promise.all([fsp.realpath(pageAssetsDir), fsp.realpath(file), fsp.lstat(file)]);
+        if (!stat.isFile() || realFile !== path.join(realRoot, ownerId, assetId)) {
+          throw Object.assign(new Error("Imagem não encontrada."), { statusCode: 404 });
+        }
+        await fsp.rename(file, staged);
+        moved = true;
+      });
     } catch (error) {
-      await fsp.rename(staged,file);
+      if (moved) await fsp.rename(staged,file);
       throw error;
     }
     await fsp.unlink(staged);
@@ -877,7 +1169,8 @@ async function persistenceApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/persistence/users") {
     const users = await readUsersFile();
     const friendships = await readFriendshipsFile();
-    json(res, 200, { users: publicUsers(users, friendships) });
+    const viewer = await requestUser(req, users);
+    json(res, 200, { users: publicUsers(users, await visibleFriendships(friendships, viewer?.id), viewer && String(viewer.id)) });
     return true;
   }
 
@@ -936,29 +1229,32 @@ async function persistenceApi(req, res, url) {
       }
       all[index] = mergeUserData(all[index], incoming);
       await writeRecords(usersFile, all);
-      return all[index];
+      return { user: all[index], viewerId: String(actor.id) };
     });
-    json(res, 200, { ok: true, user: publicUser(savedUser, await readFriendshipsFile()) });
+    const visible = await visibleFriendships(await readFriendshipsFile(), savedUser.viewerId);
+    json(res, 200, { ok: true, user: publicUser(savedUser.user, visible, savedUser.viewerId) });
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/api/persistence/audio") {
-    if (!(await requestUser(req))) {
+    const user = await requestUser(req);
+    if (!user) {
       json(res, 401, { error: "Entre para enviar MP3." });
       return true;
     }
     const requestedName = decodeURIComponent(req.headers["x-file-name"] || "");
-    if (!/\.mp3$/i.test(requestedName)) {
+    if (!/\.mp3$/i.test(requestedName) || req.headers["content-type"] !== "audio/mpeg") {
       json(res, 400, { error: "Escolha um arquivo MP3." });
       return true;
     }
-    const body = await readBody(req, 55 * 1024 * 1024);
-    if (!hasMP3Signature(body)) {
-      json(res, 400, { error: "O arquivo enviado não parece ser um MP3 válido." });
-      return true;
-    }
     const id = randomUUID();
-    await saveMedia(path.join(audioDir, `${id}.mp3`), "audio", body);
+    await guardedUpload(async () => {
+      const body = await readBody(req, mediaLimits.audioFile);
+      if (!validateMp3(body)) {
+        throw Object.assign(new Error("O arquivo enviado não parece ser um MP3 válido."), { statusCode: 400 });
+      }
+      await saveMedia(req, user, path.join(audioDir, `${id}.mp3`), "audio", body);
+    });
     const fileName = path.basename(requestedName).slice(0, 180) || "musica.mp3";
     json(res, 201, { fileId: `server:${id}`, fileName });
     return true;
@@ -1013,8 +1309,20 @@ async function persistenceApi(req, res, url) {
 await ensureDataDirs();
 
 const server = http.createServer(async (req, res) => {
+  const requestId = randomUUID();
+  res.setHeader("X-Request-Id", requestId);
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   try {
     const url = new URL(req.url, "http://localhost");
+    if (isCrossOriginMutation(req, url)) {
+      json(res, 403, { error: "Origem da requisição não autorizada." });
+      return;
+    }
+    const retryAfter = authRetryAfter(req, url);
+    if (retryAfter) {
+      json(res, 429, { error: "Muitas tentativas. Aguarde e tente novamente." }, { "Retry-After": retryAfter });
+      return;
+    }
     if (await authApi(req, res, url)) return;
     if (await accountApi(req, res, url)) return;
     if (await socialApi(req, res, url)) return;
@@ -1027,39 +1335,53 @@ const server = http.createServer(async (req, res) => {
       res.end("Acesso negado");
       return;
     }
-    const file = path.resolve(
-      root,
-      "." + (pathname === "/" ? "/index.html" : pathname),
-    );
-    if (!file.startsWith(root + path.sep)) {
-      res.writeHead(403);
-      res.end();
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405, { Allow: "GET, HEAD" });
+      res.end("Método não permitido");
       return;
     }
-    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    const name = pathname === "/" ? "index.html" : pathname.slice(1);
+    const file = path.join(root, name);
+    if (!publicFiles.has(name) || !(await fileExists(file))) {
       res.writeHead(404);
       res.end("Arquivo não encontrado");
       return;
     }
     res.writeHead(200, {
       "Content-Type":
-        (types[path.extname(file)] || "application/octet-stream") +
-        "; charset=utf-8",
+        types[path.extname(file)] + (name.endsWith(".png") ? "" : "; charset=utf-8"),
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
+      ...(name === "index.html" ? { "Content-Security-Policy": "frame-ancestors 'none'" } : {}),
     });
-    fs.createReadStream(file).pipe(res);
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(file);
+    stream.on("error", () => res.destroy());
+    res.on("close", () => stream.destroy());
+    stream.pipe(res);
   } catch (error) {
     const databaseError = typeof error?.severity === "string" || /^(ECONN|ETIMEDOUT|EPIPE)/.test(error?.code || "");
-    if (databaseError) console.error("Erro de persistência:", error.code);
-    else console.error(error);
-    const status = Number(error?.statusCode) || (databaseError ? 503 : 400);
-    if (!res.headersSent)
-      json(res, status, { error: databaseError ? "Persistência temporariamente indisponível." : error?.message || "Pedido inválido" });
+    const knownStatus = !databaseError && Number.isInteger(error?.statusCode) &&
+      error.statusCode >= 400 && error.statusCode < 500;
+    const status = knownStatus ? error.statusCode : databaseError ? 503 : error instanceof URIError ? 400 : 500;
+    if (status >= 500) {
+      console.error(JSON.stringify({ event: "request_failed", requestId, status, code: error?.code, type: error?.name }));
+    }
+    const message = knownStatus ? error.message : {
+      400: "Pedido inválido.",
+      500: "Não foi possível concluir o pedido.",
+      503: "Persistência temporariamente indisponível.",
+    }[status];
+    if (!res.headersSent) json(res, status, { error: message }, status === 413 ? { Connection: "close" } : {});
     else res.end();
   }
 });
 
+server.requestTimeout = 90_000;
+server.headersTimeout = 15_000;
 server.listen(Number(process.env.PORT || 4183), "127.0.0.1", () =>
   console.log("MinhaEstante: http://127.0.0.1:" + server.address().port),
 );

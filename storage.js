@@ -472,9 +472,16 @@ export async function login(identifier, password) {
   return user;
 }
 
-export function logout() {
+export async function logout() {
+  const user = currentUser();
+  if (user && serverPersistenceEnabled) {
+    await flushUserPersistence(user.id);
+    await request('/api/auth/logout', { method: 'POST' });
+    const remaining = users().filter(item => item.id !== user.id);
+    write(KEYS.users, remaining);
+  }
   localStorage.removeItem(KEYS.session);
-  request('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  if (serverPersistenceEnabled) await refreshUsers().catch(() => {});
 }
 
 export async function register(data) {
@@ -506,13 +513,26 @@ export async function updateAccount(data) {
   return payload.account;
 }
 
-export async function changePassword(newPassword, confirmPassword) {
+export async function changePassword(currentPassword, newPassword, confirmPassword) {
   return request('/api/account/password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ newPassword, confirmPassword }),
+    body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
   });
 }
+
+export const accountPrivacy = () => request("/api/account/privacy");
+export const accountStorage = () => request("/api/account/storage");
+
+function sendAccountJSON(path, body, method = "POST") {
+  return request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+export const updateAccountPrivacy = hideFriends => sendAccountJSON("/api/account/privacy", { hideFriends }, "PUT");
+export const requestAccountDeletion = password => sendAccountJSON("/api/account/deletion-request", { password });
+export const passwordResetAvailability = () => request("/api/auth/password-reset");
+export const requestPasswordReset = email => sendAccountJSON("/api/auth/password-reset/request", { email });
+export const confirmPasswordReset = (token, password) => sendAccountJSON("/api/auth/password-reset/confirm", { token, password });
 
 export async function friends(userId) {
   const payload = await request(`/api/social/friends?userId=${encodeURIComponent(userId || '')}`);

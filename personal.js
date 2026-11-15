@@ -77,7 +77,7 @@ export function avatar(user) {
     picture(url, `Avatar de ${user.page.displayName}`));
 }
 
-function friendshipProfileControl(user, friendship) {
+export function friendshipProfileControl(user, friendship) {
   if (!friendship || friendship.state === "self") return null;
   const attrs = {
     class: "profile-friendship-control",

@@ -1,5 +1,5 @@
 import {
-  createHmac,
+  createHash,
   randomBytes,
   scrypt as scryptCallback,
   timingSafeEqual,
@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 const scrypt = promisify(scryptCallback);
 const HASH_PREFIX = "scrypt-v1";
 const HASH_BYTES = 64;
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 const b64url = (value) => Buffer.from(value).toString("base64url");
 
@@ -48,6 +48,17 @@ export function sanitizeUser(user) {
   return copy;
 }
 
+export function sanitizePublicProfile(user) {
+  const profile = sanitizeUser(user);
+  for (const field of ["account", "fullName", "email", "phone", "birthDate", "city", "passwordHint"]) {
+    delete profile[field];
+  }
+  for (const page of [profile.page, profile.page?.mediaPages?.books, profile.page?.mediaPages?.albums]) {
+    if (page?.customCode && typeof page.customCode === "object") delete page.customCode.previousVersion;
+  }
+  return profile;
+}
+
 export function sanitizeUsers(users) {
   return Array.isArray(users) ? users.map(sanitizeUser) : [];
 }
@@ -60,45 +71,18 @@ export function authRecord(user, passwordHash) {
   };
 }
 
-export function createSessionToken(userId, secret, now = Date.now()) {
-  const payload = {
-    uid: String(userId),
-    exp: Math.floor(now / 1000) + SESSION_TTL_SECONDS,
-  };
-  const encoded = b64url(JSON.stringify(payload));
-  const signature = createHmac("sha256", secret).update(encoded).digest("base64url");
-  return `${encoded}.${signature}`;
+export const newSessionToken = () => randomBytes(32).toString("base64url");
+
+export function sessionTokenDigest(token) {
+  return typeof token === "string" && /^[A-Za-z0-9_-]{43}$/.test(token)
+    ? createHash("sha256").update(token).digest() : null;
 }
 
-export function verifySessionToken(token, secret, now = Date.now()) {
-  if (typeof token !== "string") return null;
-  const [encoded, signature, extra] = token.split(".");
-  if (!encoded || !signature || extra !== undefined) return null;
-  const expected = createHmac("sha256", secret).update(encoded).digest();
-  let received;
-  try {
-    received = Buffer.from(signature, "base64url");
-  } catch {
-    return null;
-  }
-  if (received.length !== expected.length || !timingSafeEqual(received, expected))
-    return null;
-  try {
-    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-    if (!payload?.uid || !Number.isFinite(payload.exp)) return null;
-    if (payload.exp <= Math.floor(now / 1000)) return null;
-    return { userId: String(payload.uid), expiresAt: payload.exp };
-  } catch {
-    return null;
-  }
+export function sessionCookie(token, secure = false, maxAge = SESSION_TTL_SECONDS) {
+  return `booksite_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
 }
 
-export function sessionCookie(token) {
-  return `booksite_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_SECONDS}`;
-}
-
-export const clearSessionCookie = () =>
-  "booksite_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+export const clearSessionCookie = (secure = false) => sessionCookie("", secure, 0);
 
 export function cookieValue(req, name) {
   const raw = String(req?.headers?.cookie || "");

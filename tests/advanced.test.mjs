@@ -9,6 +9,12 @@ import {
 import { readFile } from "node:fs/promises";
 
 const nonce = "frame-nonce";
+test("a ponte do iframe não pode executar ações de amizade", async () => {
+  const advanced = await readFile(new URL("../advanced.js", import.meta.url), "utf8");
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  assert.doesNotMatch(advanced, /send\('friend-action'|e\.data\.type === "friend-action"/);
+  assert.doesNotMatch(app, /addEventListener\("booksite:friend-action"/);
+});
 const message = (overrides = {}) => ({
   channel: "booksite-page",
   nonce,

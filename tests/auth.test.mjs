@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
-  createSessionToken,
+  newSessionToken,
   hashPassword,
   sanitizeUser,
+  sanitizePublicProfile,
   verifyPassword,
-  verifySessionToken,
+  sessionTokenDigest,
 } from "../auth.mjs";
 
 test("senha vira scrypt com salt e nunca reaparece em texto puro", async () => {
@@ -19,14 +20,32 @@ test("senha vira scrypt com salt e nunca reaparece em texto puro", async () => {
   assert.equal(await verifyPassword(secret + "x", hashA), false);
 });
 
-test("token de sessão assinado rejeita adulteração e expiração", () => {
-  const key = randomBytes(32).toString("hex");
-  const now = Date.now();
-  const token = createSessionToken("user-123", key, now);
-  assert.equal(verifySessionToken(token, key, now)?.userId, "user-123");
-  assert.equal(verifySessionToken(token + "x", key, now), null);
-  assert.equal(verifySessionToken(token, key + "x", now), null);
-  assert.equal(verifySessionToken(token, key, now + 31 * 24 * 60 * 60 * 1000), null);
+test("perfil público oculta históricos de edição e dados de cadastro", () => {
+  const profile = {
+    fullName: "Nome civil",
+    email: "conta@example.invalid",
+    page: {
+      displayName: "Apelido",
+      customCode: { html: "<p>Público</p>", previousVersion: { html: "privado" } },
+      mediaPages: { albums: { customCode: { previousVersion: { html: "privado" } } } },
+    },
+  };
+  const output = sanitizePublicProfile(profile);
+  assert.equal(output.fullName, undefined);
+  assert.equal(output.email, undefined);
+  assert.equal(output.page.displayName, "Apelido");
+  assert.equal(output.page.customCode.html, "<p>Público</p>");
+  assert.equal(output.page.customCode.previousVersion, undefined);
+  assert.equal(output.page.mediaPages.albums.customCode.previousVersion, undefined);
+  assert.ok(profile.page.customCode.previousVersion);
+});
+
+test("sessões recebem tokens opacos distintos e só persistem o digest", () => {
+  const token = newSessionToken();
+  assert.notEqual(token, newSessionToken());
+  assert.equal(sessionTokenDigest(token).length, 32);
+  assert.equal(sessionTokenDigest(token + "x"), null);
+  assert.notEqual(sessionTokenDigest(token).toString("base64url"), token);
 });
 
 test("usuário enviado ao navegador não contém material de autenticação", () => {

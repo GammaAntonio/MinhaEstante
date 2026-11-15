@@ -189,7 +189,11 @@ O formato antigo (`page.customization`, `page.gadgets`, `page.customCode` etc.) 
 
 ## Persistência PostgreSQL
 
-O servidor usa PostgreSQL via pg. Execute npm ci, configure DATABASE_URL ou as variáveis PGHOST, PGPORT, PGDATABASE e PGUSER e inicialize o banco antes de npm start. Node pode carregar um arquivo privado com node --env-file=.env server.mjs. Os arquivos de mídia continuam em data/audio e data/page-assets. MINHAESTANTE_DATA_DIR pode apontar para um diretório de mídia separado em um teste. As sessões assinadas continuam válidas porque a migração preserva a chave de assinatura.
+O servidor usa PostgreSQL via pg. Execute npm ci, configure DATABASE_URL ou as variáveis PGHOST, PGPORT, PGDATABASE e PGUSER e inicialize o banco antes de npm start. Node pode carregar um arquivo privado com node --env-file=.env server.mjs. Os arquivos de mídia continuam em data/audio e data/page-assets. MINHAESTANTE_DATA_DIR pode apontar para um diretório de mídia separado em um teste.
+
+Em bancos já migrados, aplique `database/migrations/003-auth-sessions.sql` em uma transação como proprietário do esquema antes de iniciar o servidor atualizado. Conceda SELECT, INSERT e DELETE sobre `auth_sessions` ao papel da aplicação. A atualização autentica sessões por tokens opacos de 30 dias e pede um novo login aos usuários que ainda têm o cookie assinado antigo. Sair revoga a sessão atual. A troca de senha confirma a senha atual e encerra as demais sessões. Em produção, o backend usa o protocolo e o IP encaminhados pelo Caddy, que deve substituir cabeçalhos de encaminhamento de clientes não confiáveis. Mantenha o Node acessível apenas na interface local.
+
+Aplique também 004 e 005 na mesma parada de manutenção. A 004 atribui imagens antigas ao dono do diretório e MP3 antigos ao único perfil ou acervo que os referencia. Um MP3 sem atribuição inequívoca continua disponível e conta no limite da instância. A 005 adiciona restauração de senhas, visibilidade de amizades e solicitações de exclusão. Conceda SELECT, INSERT, UPDATE e DELETE em `password_resets`, SELECT, INSERT e UPDATE em `account_privacy`, e SELECT e INSERT em `account_deletion_requests`. A aplicação não precisa ser proprietária dessas tabelas.
 
 Em um banco vazio, execute node scripts/migrate-json-to-postgres.mjs /caminho/data --dry-run. Depois rode o mesmo comando sem --dry-run e execute node scripts/verify-migration.mjs /caminho/data antes de abrir o serviço para gravações. O verificador reconstrói os quatro conjuntos de registros, compara por valor e confere o inventário de mídias. Uma repetição com os mesmos registros apenas confirma a paridade. Uma origem divergente interrompe a operação.
 
@@ -198,3 +202,17 @@ No DBeaver, escolha PostgreSQL, host do banco 127.0.0.1 e porta 5432. Ative SSH 
 A rotina scripts/backup-database.sh gera dump, arquivos de mídia e checksums. Configure PGDATABASE, MEDIA_DIR, BACKUP_DIR e OFFSITE_DIR montado em armazenamento independente. Passe explicitamente ao script os arquivos da unit, credenciais protegidas e Caddy para incluí-los. Agende a rotina só após testar a restauração em ambiente separado. scripts/restore-database.sh recebe a pasta do backup e um diretório novo para os arquivos, e exige um banco vazio.
 
 Durante corte ou retorno, pare a aplicação para impedir gravações concorrentes. Se o PostgreSQL já recebeu gravações públicas, use a versão anterior compatível com PostgreSQL ou exporte e reconcilie os dados antes de voltar ao backend JSON. O snapshot JSON anterior ao corte serve para recuperar uma implantação que ainda não recebeu tráfego de escrita.
+
+## Dados da conta e recuperação da página
+
+Em **Minha conta**, use **Baixar meus dados (JSON)** para exportar o cadastro, o perfil, as relações de amizade e o inventário das imagens da página. Os binários de mídia são servidos à parte. Cidade e telefone são opcionais. Novos perfis usam o nome de usuário como nome público inicial e o titular pode alterar a apresentação no editor.
+
+Em páginas com HTML, CSS e JavaScript personalizados, **Abrir sem código personalizado** renderiza o perfil pelo editor visual. É possível acessar esse modo diretamente com `?seguro=1` ou `?media=albums&seguro=1`. O conteúdo salvo fica disponível para edição, prévia e restauração pelo titular.
+
+O iframe aceita scripts do perfil em origem opaca. Popups, formulários e chamadas de API ficam bloqueados. As imagens podem usar uploads da própria aplicação, dados embutidos ou os provedores de catálogo declarados no código. Uma imagem de outro host pode ser enviada pelo editor. Use links externos nos controles confiáveis do perfil.
+
+Em **Minha conta**, a opção de ocultar amizades retira esse vínculo da visão pública dos dois perfis. Cada participante ainda vê seus próprios vínculos. Solicitações de exclusão exigem a senha atual e ficam registradas em `account_deletion_requests` para tratamento pelo operador, inclusive nas cópias e mídias associadas.
+
+Configure `PASSWORD_RESET_ORIGIN` com o endereço HTTPS oficial e forneça `RESEND_API_KEY` e `WELCOME_FROM_EMAIL` por arquivo de ambiente protegido ou credencial de serviço. O remetente precisa estar verificado no provedor. Sem essas configurações a interface informa que o envio está indisponível. Links expiram em 30 minutos, são de uso único e a redefinição encerra as sessões da conta.
+
+O painel **Armazenamento** mostra o inventário atribuído à conta por tipo. Os limites padrão são 5 MiB por imagem, 50 MiB por MP3, 100 MiB em imagens, 300 imagens, 20 MP3 e 500 MiB por conta. A instância tem limite total de 512 MiB e reserva 3 GiB livres no disco. Os limites de contagem e os totais são configuráveis por `MEDIA_AUDIO_COUNT`, `MEDIA_IMAGE_COUNT`, `MEDIA_IMAGES_MIB`, `MEDIA_ACCOUNT_MIB` e `MEDIA_INSTANCE_MIB`. O servidor processa um upload por vez. Arquivos antigos permanecem disponíveis.

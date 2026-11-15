@@ -47,12 +47,27 @@ try{
     for (const [index,user] of legacy.entries()) await db.saveUser(user,index);
     if(!isDeepStrictEqual(await db.read("users"),legacy)) throw Error("Divergência na atualização do esquema");
   }
+  const sessions = await db.query("SELECT to_regclass('public.auth_sessions') AS installed");
+  if (!sessions.rows[0].installed) {
+    if (verify) throw Error("Migration 003 pendente");
+    await db.query(await readFile(new URL("../database/migrations/003-auth-sessions.sql",import.meta.url),"utf8"));
+  }
   const {rows}=await db.query("SELECT session_secret, creator_id FROM app_state");
   if(!rows.length && !verify){
    for(const kind of kinds) await db.write(kind,source[kind]);
    await db.query("INSERT INTO app_state(session_secret,creator_id) VALUES($1,$2)",[session,creator]);
-   for(const file of files) await db.query("INSERT INTO media_files VALUES($1,$2,$3)",file);
+   for(const file of files) await db.query("INSERT INTO media_files(path,kind,size_bytes) VALUES($1,$2,$3)",file);
   }else if(rows[0]?.session_secret!==session || rows[0]?.creator_id!==creator) throw Error("Identidade ou sessão divergente");
+  const ownership=await db.query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='media_files' AND column_name='owner_id') AS installed");
+  if (!ownership.rows[0].installed) {
+    if (verify) throw Error("Migration 004 pendente");
+    await db.query(await readFile(new URL("../database/migrations/004-media-ownership.sql",import.meta.url),"utf8"));
+  }
+  const safety=await db.query("SELECT to_regclass('public.password_resets') AS installed");
+  if (!safety.rows[0].installed) {
+    if (verify) throw Error("Migration 005 pendente");
+    await db.query(await readFile(new URL("../database/migrations/005-account-safety.sql",import.meta.url),"utf8"));
+  }
   await db.query("SET CONSTRAINTS ALL IMMEDIATE");
   for(const kind of kinds) if(!isDeepStrictEqual(await db.read(kind),source[kind])) throw Error("Divergência em "+kind);
   const existing=(await db.query("SELECT path,kind,size_bytes FROM media_files")).rows.map(v=>[v.path,v.kind,Number(v.size_bytes)]);

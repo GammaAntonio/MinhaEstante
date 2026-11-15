@@ -1,4 +1,4 @@
-const MAX_PAGE_ASSET_BYTES = 8 * 1024 * 1024;
+const MAX_PAGE_ASSET_BYTES = 5 * 1024 * 1024;
 const ALLOWED_PAGE_ASSET_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -29,7 +29,7 @@ export async function uploadPageAsset(file) {
   if (!(file instanceof File)) throw new Error("Escolha uma imagem.");
   if (file.size <= 0) throw new Error("A imagem está vazia.");
   if (file.size > MAX_PAGE_ASSET_BYTES)
-    throw new Error("A imagem deve ter no máximo 8 MB.");
+    throw new Error("A imagem deve ter no máximo 5 MB.");
   if (!ALLOWED_PAGE_ASSET_TYPES.has(file.type))
     throw new Error("Use PNG, JPG, WEBP ou GIF. SVG não é aceito.");
 

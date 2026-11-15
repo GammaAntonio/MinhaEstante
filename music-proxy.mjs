@@ -2,6 +2,29 @@
 let queue = Promise.resolve(),
   last = 0;
 const cache = new Map();
+let pending = 0;
+
+async function boundedJson(response) {
+  if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) {
+    await response.body?.cancel();
+    throw new Error("Resposta inválida do catálogo");
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 512 * 1024) throw new Error("Resposta do catálogo excede o limite");
+      chunks.push(value);
+    }
+    return JSON.stringify(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
 export async function musicProxy(req, res, url) {
   if (url.pathname !== "/catalog-api/musicbrainz") return false;
   const resource = url.searchParams.get("resource") || "";
@@ -22,6 +45,12 @@ export async function musicProxy(req, res, url) {
   const key = target.href;
   let entry = cache.get(key);
   if (!entry || Date.now() - entry.time > 3600000) {
+    if (pending >= 8) {
+      res.writeHead(503, { "Retry-After": "5" });
+      res.end("Catálogo musical ocupado");
+      return true;
+    }
+    pending++;
     const task = queue
       .catch(() => {})
       .then(async () => {
@@ -30,6 +59,7 @@ export async function musicProxy(req, res, url) {
           await new Promise((resolve) => setTimeout(resolve, delay));
         last = Date.now();
         const response = await fetch(target, {
+          redirect: "error",
           headers: {
             "User-Agent":
               "MinhaEstante/1.0 (personal local catalog; http://127.0.0.1:4173)",
@@ -37,13 +67,18 @@ export async function musicProxy(req, res, url) {
           },
           signal: AbortSignal.timeout(20000),
         });
-        const body = await response.text();
+        if (!response.ok) {
+          await response.body?.cancel();
+          entry = { body: JSON.stringify({ error: "Consulta musical indisponível." }), status: response.status };
+          return;
+        }
+        const body = await boundedJson(response);
         if (response.ok) {
           entry = { time: Date.now(), body, status: response.status };
           cache.set(key, entry);
           if (cache.size > 100) cache.delete(cache.keys().next().value);
         } else entry = { body, status: response.status };
-      });
+      }).finally(() => { pending--; });
     queue = task;
     try {
       await task;
@@ -57,6 +92,7 @@ export async function musicProxy(req, res, url) {
   }
   res.writeHead(entry.status, {
     "Content-Type": "application/json; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
     "Cache-Control": "no-store",
   });
   res.end(entry.body);

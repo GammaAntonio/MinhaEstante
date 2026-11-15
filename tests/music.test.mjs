@@ -63,7 +63,7 @@ test('upload exige confirmação persistente e nunca acessa armazenamento do nav
 
 test('envio rejeita arquivo que não é MP3 e arquivos acima do limite', async () => {
   await assert.rejects(uploadMP3({ name: 'video.mp4', size: 100 }), /MP3/);
-  await assert.rejects(uploadMP3({ name: 'musica.mp3', size: 55 * 1024 * 1024 + 1 }), /55 MB/);
+  await assert.rejects(uploadMP3({ name: 'musica.mp3', size: 55 * 1024 * 1024 + 1 }), /50 MB/);
   await assert.rejects(uploadMP3({ name: 'falso.mp3', size: 3, slice: () => new Blob(['abc']) }), /válido/);
 });
 

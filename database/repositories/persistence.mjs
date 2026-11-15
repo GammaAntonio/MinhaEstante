@@ -86,7 +86,7 @@ export function createRepository() {
       }
     }
   }
-  async function readUsers({ legacy = false } = {}) {
+  async function readUsers({ legacy = false, userId = null } = {}) {
     // One statement gives every collection the same PostgreSQL snapshot.
     const {rows} = await query(`SELECT u.id,u.username,u.role,u.metadata,
       (SELECT jsonb_object_agg(media,configuration) FROM profiles WHERE user_id=u.id) AS profiles,
@@ -94,7 +94,8 @@ export function createRepository() {
       (SELECT jsonb_agg(metadata ORDER BY ordinal) FROM album_entries WHERE user_id=u.id) AS albums,
       (SELECT jsonb_agg(jsonb_build_array(category,record_key,metadata${legacy ? "" : ", (SELECT jsonb_agg(coalesce(work_id,album_id) ORDER BY li.ordinal) FROM list_items li WHERE (li.user_id,li.category,li.record_key)=(r.user_id,r.category,r.record_key))"}) ORDER BY ordinal) FROM user_records r WHERE user_id=u.id) AS records,
       ${legacy ? "NULL AS snapshots" : snapshotSQL}
-      FROM users u ORDER BY ordinal`);
+      FROM users u ${userId === null ? "" : "WHERE u.id = $1"} ORDER BY ordinal`,
+    userId === null ? [] : [userId]);
     return rows.map(row => {
       const user={...row.metadata,id:row.id,username:row.username};
       if(row.role !== null) user.role=row.role;

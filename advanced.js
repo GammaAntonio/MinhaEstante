@@ -5,6 +5,7 @@ import { renderMusic } from "./music.js";
 import { renderAlbumSections, albumGrid } from "./album-pages.js";
 import {
   renderPersonalHeader,
+  friendshipProfileControl,
   gadgetBody,
   renderSidebar,
   renderWall,
@@ -491,16 +492,21 @@ export async function advancedDocument(user, code, nonce, { friendship = null, e
  document.addEventListener('error',e=>{if(e.target?.tagName==='IMG')e.target.remove();},true);
  addEventListener('error',e=>{if(e.message)send('error',String(e.message).slice(0,200));});
  addEventListener('unhandledrejection',e=>send('error',String(e.reason).slice(0,200)));
- addEventListener('click',e=>{const friendButton=e.target.closest?.('[data-friend-action]');if(friendButton){e.preventDefault();send('friend-action',{action:friendButton.dataset.friendAction||'',targetId:friendButton.closest?.('[data-friend-target-id]')?.dataset.friendTargetId||'',targetName:friendButton.closest?.('[data-friend-target-name]')?.dataset.friendTargetName||'',friendshipId:friendButton.dataset.friendshipId||''});return;}const a=e.target.closest?.('a');const rawHref=a?.getAttribute('href')||'';if(!rawHref)return;let href=rawHref;if(!href.startsWith('#/')){try{const absolute=new URL(href,appOrigin+'/');if(absolute.origin!==appOrigin||!absolute.hash.startsWith('#/'))return;href=absolute.hash;}catch{return;}}const media=href.match(new RegExp('^#/(livro|album)/([^?]+)(?:[?]([^#]*))?$'));if(media){e.preventDefault();let id='';try{id=decodeURIComponent(media[2]);}catch{return;}const username=new URLSearchParams(media[3]||'').get('user')||'';if(id)sendMedia(media[1]==='album'?'album':'book',id,username);return;}e.preventDefault();send('navigate',href);});
+ addEventListener('click',e=>{const a=e.target.closest?.('a');const rawHref=a?.getAttribute('href')||'';if(!rawHref)return;let href=rawHref;if(!href.startsWith('#/')){try{const absolute=new URL(href,appOrigin+'/');if(absolute.origin!==appOrigin||!absolute.hash.startsWith('#/'))return;href=absolute.hash;}catch{return;}}const media=href.match(new RegExp('^#/(livro|album)/([^?]+)(?:[?]([^#]*))?$'));if(media){e.preventDefault();let id='';try{id=decodeURIComponent(media[2]);}catch{return;}const username=new URLSearchParams(media[3]||'').get('user')||'';if(id)sendMedia(media[1]==='album'?'album':'book',id,username);return;}e.preventDefault();send('navigate',href);});
  addEventListener('load',()=>{let last=0;new ResizeObserver(()=>{const height=Math.max(400,document.body.scrollHeight);if(Math.abs(last-height)>3){last=height;send('height',height);}}).observe(document.body);});`;
-  // A CSP precede qualquer HTML do usuário. Nunca acrescentar allow-same-origin ao sandbox.
-  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: http: data:; connect-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css.replace(/<\/style/gi, "<\\/style")}</style><script>${bridge}<\/script></head><body>${html}<script>${js.replace(/<\/script/gi, "<\\/script")}<\/script></body></html>`;
+  // A CSP precede o HTML do perfil. O iframe tem origem opaca.
+  const origin = globalThis.location?.origin || "";
+  const uploads = /^https?:\/\/[a-z0-9.:-]+$/i.test(origin) ? origin + "/api/persistence/page-assets/file/" : "";
+  const imageSources = ["data:", uploads, "https://covers.openlibrary.org", "https://books.google.com",
+    "https://books.googleusercontent.com", "https://coverartarchive.org", "https://*.archive.org",
+    "https://*.mzstatic.com", "https://api.iconify.design"].filter(Boolean).join(" ");
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${imageSources}; connect-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css.replace(/<\/style/gi, "<\\/style")}</style><script>${bridge}<\/script></head><body>${html}<script>${js.replace(/<\/script/gi, "<\\/script")}<\/script></body></html>`;
 }
 export async function advancedFrame(user, code, { preview = false, friendship = null } = {}) {
   const nonce = (globalThis.crypto?.randomUUID?.() ?? (globalThis.crypto?.getRandomValues ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("") : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)),
     frame = h("iframe", {
       class: preview ? "preview-frame" : "custom-frame",
-      sandbox: "allow-scripts allow-popups allow-popups-to-escape-sandbox",
+      sandbox: "allow-scripts",
       title: preview
         ? "Prévia isolada da sua página"
         : "Página pessoal em ambiente isolado",
@@ -514,11 +520,12 @@ export async function advancedFrame(user, code, { preview = false, friendship = 
     const config = user.page.gadgets.find(item => item.type === type && item.enabled);
     return config && panel(title, gadgetBody(config, user, media, friendship));
   };
-  frame.srcdoc = await advancedDocument(user, code, nonce, { friendship, externalMusicSidebar });
+  frame.srcdoc = await advancedDocument(user, code, nonce, { externalMusicSidebar });
   let errors = 0;
   const listener = (e) => {
     if (
       e.source !== frame.contentWindow ||
+      e.origin !== "null" ||
       e.data?.channel !== "booksite-page" ||
       e.data.nonce !== nonce
     )
@@ -527,12 +534,6 @@ export async function advancedFrame(user, code, { preview = false, friendship = 
     if (mediaDetail) {
       window.dispatchEvent(
         new CustomEvent("booksite:openmedia", { detail: mediaDetail }),
-      );
-      return;
-    }
-    if (e.data.type === "friend-action" && e.data.value && typeof e.data.value === "object") {
-      window.dispatchEvent(
-        new CustomEvent("booksite:friend-action", { detail: e.data.value }),
       );
       return;
     }
@@ -573,6 +574,7 @@ export async function advancedFrame(user, code, { preview = false, friendship = 
           preview && renderMusic(music, { artwork: user.page.avatar, subtitle: user.page.displayName }))),
         externalMusicSidebar && gadget("reading", media === "albums" ? "Álbuns na estante · Ouvindo" : "Lendo agora")),
       h("div", { class: "advanced-profile-content" },
+        !preview && friendshipProfileControl(user, friendship),
         user.page.stickers?.length > 0 && h("div", { class: "advanced-decoration-region" }, stickerLayer(user.page.stickers)),
         frame,
         user.isCreator && (user.page._media !== "albums") && user.page.gadgets

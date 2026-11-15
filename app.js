@@ -132,10 +132,10 @@ function renderHeader(route) {
         h("span", {}, "olá, ", userIdentity(user, { linkProfile: true }), "."),
         link("editar minha página", `#/pagina/${user.username}/editar`),
         link("minha conta", "#/conta"),
-        button("sair", () => {
-          Store.logout();
+        button("sair", guarded(async () => {
+          await Store.logout();
           navigate("/login");
-        }),
+        })),
       ] : [link("entrar", "#/login"), link("criar página", "#/criar-pagina")]);
   return [
     h("header", { class: "site-header" },
@@ -287,7 +287,6 @@ function home(user, { inspect = false } = {}) {
 }
 
 function auth(signup = false) {
-  const hintBox = h("div", { class: "password-hint-box", hidden: true });
   const maxBirthDate = (() => {
     const d = new Date();
     d.setFullYear(d.getFullYear() - 14);
@@ -304,14 +303,14 @@ function auth(signup = false) {
     field("Data de nascimento", input("birthDate", "", {
       type: "date", required: true, max: maxBirthDate, autocomplete: "bday",
     }), "Cadastro disponível para pessoas com 14 anos ou mais."),
-    field("Cidade", input("city", "", {
-      required: true, maxlength: 100, autocomplete: "address-level2",
+    field("Cidade (opcional)", input("city", "", {
+      maxlength: 100, autocomplete: "address-level2",
     })),
     field("E-mail", input("email", "", {
       type: "email", required: true, maxlength: 160, autocomplete: "email",
     })),
-    field("Telefone", input("phone", "", {
-      type: "tel", required: true, maxlength: 24, autocomplete: "tel",
+    field("Telefone (opcional)", input("phone", "", {
+      type: "tel", maxlength: 24, autocomplete: "tel",
       placeholder: "(14) 99999-9999",
     })),
     field("Senha", input("password", "", {
@@ -322,10 +321,6 @@ function auth(signup = false) {
       type: "password", required: true, minlength: 6, maxlength: 200,
       autocomplete: "new-password",
     })),
-    field("Dica da senha (opcional)", input("passwordHint", "", {
-      maxlength: 160, autocomplete: "off",
-      placeholder: "algo que ajude você a lembrar",
-    }), "Ela aparece quando você erra a senha. Não escreva a senha inteira aqui."),
   ] : [
     field("E-mail ou nome de usuário", input("identifier", "", {
       required: true, maxlength: 160, autocomplete: "username",
@@ -336,35 +331,24 @@ function auth(signup = false) {
   ];
   const f = h("form", { class: signup ? "signup-form" : "login-form" },
     signup ? h("div", { class: "form-grid signup-grid" }, fields) : fields,
-    !signup && hintBox,
     signup && h("p", { class: "notice" },
       "Sua senha é guardada como hash no servidor. O e-mail é usado para a conta e para a mensagem de boas-vindas."),
     submit(signup ? "criar minha conta" : "entrar"),
+    !signup && h("p", {}, link("Esqueci a senha", "#/redefinir-senha")),
     h("p", {}, link(signup ? "já tenho uma conta" : "quero criar uma conta",
       signup ? "#/login" : "#/criar-pagina")));
   formSubmit(f, async (data) => {
-    hintBox.hidden = true;
-    hintBox.replaceChildren();
-    try {
-      if (signup) {
-        await Store.register({
-          fullName: data.get("fullName"), username: data.get("username"),
-          birthDate: data.get("birthDate"), city: data.get("city"),
-          email: data.get("email"), phone: data.get("phone"),
-          password: data.get("password"), confirmPassword: data.get("confirmPassword"),
-          passwordHint: data.get("passwordHint"),
-        });
-      } else {
-        await Store.login(data.get("identifier"), data.get("password"));
-      }
-      navigate("/home");
-    } catch (error) {
-      if (!signup && error.hint) {
-        hintBox.hidden = false;
-        hintBox.append(h("strong", {}, "Dica da senha: "), h("span", {}, error.hint));
-      }
-      throw error;
+    if (signup) {
+      await Store.register({
+        fullName: data.get("fullName"), username: data.get("username"),
+        birthDate: data.get("birthDate"), city: data.get("city"),
+        email: data.get("email"), phone: data.get("phone"),
+        password: data.get("password"), confirmPassword: data.get("confirmPassword"),
+      });
+    } else {
+      await Store.login(data.get("identifier"), data.get("password"));
     }
+    navigate("/home");
   });
   return h("div", { class: "auth-layout" },
     h("div", { class: "auth-intro" },
@@ -376,10 +360,41 @@ function auth(signup = false) {
     h("div", {}, h("h2", {}, signup ? "criar conta" : "entrar na sua conta"), f));
 }
 
+async function passwordResetPage(query) {
+  const token = query.get("token");
+  if (!token && !(await Store.passwordResetAvailability()).enabled)
+    return h("div", {}, heading("Recuperar senha"), h("p", {}, "A recuperação por e-mail está indisponível no momento."), link("Voltar ao login", "#/login"));
+  const status = h("p", { role: "status" });
+  const form = h("form", {},
+    token ? field("Nova senha", input("password", "", {
+      type: "password", required: true, minlength: 6, maxlength: 200, autocomplete: "new-password",
+    })) : field("E-mail da conta", input("email", "", {
+      type: "email", required: true, maxlength: 160, autocomplete: "email",
+    })),
+    submit(token ? "Salvar nova senha" : "Enviar link"), status);
+  formSubmit(form, async data => {
+    if (token) {
+      await Store.confirmPasswordReset(token, data.get("password"));
+      localStorage.removeItem(Store.KEYS.session);
+      history.replaceState(null, "", "#/login");
+      navigate("/login");
+      notify("Senha redefinida. Entre com a nova senha.");
+    } else {
+      await Store.requestPasswordReset(data.get("email"));
+      form.reset();
+      status.textContent = "Se houver uma conta com esse e-mail, você receberá um link.";
+    }
+  });
+  return h("div", {}, heading(token ? "Redefinir senha" : "Recuperar senha"), form, link("Voltar ao login", "#/login"));
+}
+
 async function accountPage() {
   const user = requireUser();
   if (!user) return empty("entre para abrir sua conta.");
-  const account = await Store.account();
+  const [account, privacy, storage] = await Promise.all([Store.account(), Store.accountPrivacy(), Store.accountStorage()]);
+  const mediaSize = bytes => (bytes / (1024 * 1024)).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + " MiB";
+  const images = storage.usage.image || { bytes: 0, count: 0 };
+  const audio = storage.usage.audio || { bytes: 0, count: 0 };
   const maxBirthDate = (() => {
     const d = new Date();
     d.setFullYear(d.getFullYear() - 14);
@@ -396,28 +411,52 @@ async function accountPage() {
       field("Data de nascimento", input("birthDate", account.birthDate || "", {
         type: "date", required: true, max: maxBirthDate, autocomplete: "bday",
       })),
-      field("Cidade", input("city", account.city || "", {
-        required: true, maxlength: 100, autocomplete: "address-level2",
+      field("Cidade (opcional)", input("city", account.city || "", {
+        maxlength: 100, autocomplete: "address-level2",
       })),
       field("E-mail", input("email", account.email || "", {
         type: "email", required: true, maxlength: 160, autocomplete: "email",
       })),
-      field("Telefone", input("phone", account.phone || "", {
-        type: "tel", required: true, maxlength: 24, autocomplete: "tel",
+      field("Telefone (opcional)", input("phone", account.phone || "", {
+        type: "tel", maxlength: 24, autocomplete: "tel",
       }))),
-    field("Dica da senha (opcional)", input("passwordHint", account.passwordHint || "", {
-      maxlength: 160, autocomplete: "off",
-    }), "A dica aparece apenas quando alguém acerta sua conta, mas erra a senha."),
+    field("Senha atual para alterar o e-mail", input("currentPassword", "", {
+      type: "password", maxlength: 200, autocomplete: "current-password",
+    })),
     submit("salvar dados da conta"));
   formSubmit(infoForm, async (data) => {
     await Store.updateAccount({
       fullName: data.get("fullName"), birthDate: data.get("birthDate"),
       city: data.get("city"), email: data.get("email"), phone: data.get("phone"),
-      passwordHint: data.get("passwordHint"),
+      currentPassword: data.get("currentPassword"),
     });
     notify("Dados da conta salvos.");
   });
+  const visibility = h("input", { type: "checkbox", name: "hideFriends" });
+  visibility.checked = privacy.hideFriends;
+  const privacyForm = h("form", {}, h("label", {}, visibility, " Ocultar minha lista de amigos"),
+    submit("Salvar privacidade"));
+  formSubmit(privacyForm, async () => {
+    await Store.updateAccountPrivacy(visibility.checked);
+    await Store.refreshUsers();
+    notify("Privacidade atualizada.");
+  });
+  const deletionStatus = h("p", { role: "status" }, privacy.deletionRequestedAt ?
+    "Sua solicitação de exclusão está registrada." : "A solicitação fica registrada para análise.");
+  const deletionForm = h("form", {},
+    field("Senha atual", input("password", "", { type: "password", required: true, maxlength: 200, autocomplete: "current-password" })),
+    submit("Solicitar exclusão da conta"));
+  deletionForm.hidden = Boolean(privacy.deletionRequestedAt);
+  formSubmit(deletionForm, async data => {
+    await Store.requestAccountDeletion(data.get("password"));
+    deletionForm.reset();
+    deletionForm.hidden = true;
+    deletionStatus.textContent = "Sua solicitação de exclusão está registrada.";
+  });
   const passwordForm = h("form", { class: "account-password-form" },
+    field("Senha atual", input("currentPassword", "", {
+      type: "password", required: true, maxlength: 200, autocomplete: "current-password",
+    })),
     field("Nova senha", input("newPassword", "", {
       type: "password", required: true, minlength: 6, maxlength: 200,
       autocomplete: "new-password",
@@ -428,17 +467,23 @@ async function accountPage() {
     })),
     submit("alterar senha"));
   formSubmit(passwordForm, async (data, form) => {
-    await Store.changePassword(data.get("newPassword"), data.get("confirmPassword"));
+    await Store.changePassword(data.get("currentPassword"), data.get("newPassword"), data.get("confirmPassword"));
     form.reset();
     notify("Senha alterada. No próximo login, use a nova senha.");
   });
   return h("div", {},
     heading("minha conta", "dados de cadastro e segurança da sua conta."),
     h("div", { class: "account-grid" },
-      panel("dados de cadastro", h("div", { class: "panel-body" }, infoForm)),
+      panel("dados de cadastro", h("div", { class: "panel-body" }, infoForm,
+        h("p", {}, h("a", { href: "/api/account/export", download: "minhaestante-dados.json" }, "Baixar meus dados (JSON)")))),
       panel("segurança", h("div", { class: "panel-body" },
-        h("p", {}, "A senha só pode ser alterada enquanto você já estiver dentro da conta. Não há recuperação por e-mail nesta versão."),
-        passwordForm))));
+        h("p", {}, "Para trocar a senha, confirme a senha atual."),
+        passwordForm)),
+      panel("privacidade", h("div", { class: "panel-body" }, privacyForm, deletionStatus, deletionForm)),
+      panel("armazenamento", h("div", { class: "panel-body" },
+        h("p", {}, `${mediaSize(images.bytes + audio.bytes)} usados de ${mediaSize(storage.limits.totalBytes)}.`),
+        h("p", {}, `${images.count} de ${storage.limits.imageCount} imagens · ${mediaSize(images.bytes)} de ${mediaSize(storage.limits.imageBytes)}.`),
+        h("p", {}, `${audio.count} de ${storage.limits.audioCount} arquivos MP3.`)))));
 }
 
 function catalogPage(query, active) {
@@ -1167,6 +1212,9 @@ async function render(route, active) {
       case "login":
         content = auth(false);
         break;
+      case "redefinir-senha":
+        content = await passwordResetPage(route.query);
+        break;
       case "criar-pagina":
         content = auth(true);
         break;
@@ -1215,6 +1263,13 @@ async function render(route, active) {
         } else {
           if (pageMedia === "books") await hydrateUserLibrary(u);
           const friendship = await friendshipProfileState(u);
+          const view = mediaUser(u, pageMedia);
+          const hasCustomCode = view.page.customCode.mode !== "visual";
+          const safeMode = route.query.get("seguro") === "1";
+          const viewQuery = new URLSearchParams();
+          if (pageMedia === "albums") viewQuery.set("media", "albums");
+          if (!safeMode) viewQuery.set("seguro", "1");
+          const profileHref = `#/pagina/${u.username}${viewQuery.size ? "?" + viewQuery : ""}`;
           main.classList.add("personal-route");
           content = h("div", {},
             h("div", { class: "personal-controls" },
@@ -1231,11 +1286,12 @@ async function render(route, active) {
                 `#/pagina/${u.username}/editar${pageMedia === "albums" ? "?media=albums" : ""}`,
                 { class: "button" }),
               link("amigos", `#/amigos?user=${u.username}`, { class: "button" }),
+              hasCustomCode && link(safeMode ? "Ver página personalizada" : "Abrir sem código personalizado",
+                profileHref, { class: "button" }),
               h("small", {}, userIdentity(u, { username: true, linkProfile: true }))),
-            mediaUser(u, pageMedia).page.customCode.mode === "visual" ?
+            !hasCustomCode || safeMode ?
               renderPersonalPage(u, { media: pageMedia, friendship }) :
-              await advancedFrame(mediaUser(u, pageMedia),
-                mediaUser(u, pageMedia).page.customCode, { friendship }));
+              await advancedFrame(view, view.page.customCode, { friendship }));
         }
         break;
       }
@@ -1321,10 +1377,6 @@ addEventListener("booksite:openmedia", (event) => {
   if (!id) return;
   if (type === "album") openAlbumStyled(id, username || Store.currentUser()?.username || "");
   else openBookModal(id);
-});
-
-addEventListener("booksite:friend-action", (event) => {
-  guarded(() => runFriendAction(event.detail || {}))();
 });
 
 app.addEventListener("click", (event) => {
