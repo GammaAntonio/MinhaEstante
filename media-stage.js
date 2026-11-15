@@ -15,7 +15,6 @@ export function coverFlow(items) {
     const href = item.href || `#/${item.type === "album" ? "album" : "livro"}/${encodeURIComponent(item.id)}`;
     const artwork = cover(item);
     const image = artwork.querySelector("img");
-    if (image) image.loading = "eager";
     const itemLink = link(artwork, href, { class: "flow-cover", "aria-label": item.title });
     itemLink.addEventListener("click", (event) => {
       if (current === index || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -23,7 +22,7 @@ export function coverFlow(items) {
       select(index);
       viewport.focus({ preventScroll: true });
     });
-    return { item, href, itemLink };
+    return { item, href, itemLink, image };
   });
   viewport.append(...cards.map(({ itemLink }) => itemLink));
   viewport.tabIndex = 0;
@@ -32,7 +31,7 @@ export function coverFlow(items) {
 
   function select(index) {
     current = Math.max(0, Math.min(index, cards.length - 1));
-    cards.forEach(({ itemLink }, position) => {
+    cards.forEach(({ itemLink, image }, position) => {
       const distance = position - current;
       const offset = Math.max(-4, Math.min(4, distance));
       itemLink.style.setProperty("--offset", offset);
@@ -43,6 +42,7 @@ export function coverFlow(items) {
       itemLink.tabIndex = distance === 0 ? 0 : -1;
       itemLink.toggleAttribute("inert", Math.abs(distance) > 3);
       itemLink.setAttribute("aria-current", distance === 0 ? "true" : "false");
+      if (image && Math.abs(distance) <= 3) image.loading = "eager";
     });
     const { item, href } = cards[current];
     caption.replaceChildren(
@@ -60,6 +60,28 @@ export function coverFlow(items) {
     viewport.focus({ preventScroll: true });
     select(index);
   });
+  let dragStart;
+  let dragged = false;
+  viewport.addEventListener("dragstart", event => event.preventDefault());
+  viewport.addEventListener("pointerdown", event => {
+    dragged = false;
+    if (event.pointerType === "mouse" && event.button === 0) dragStart = event.clientX;
+  });
+  viewport.addEventListener("pointerleave", () => { dragStart = undefined; });
+  viewport.addEventListener("pointerup", event => {
+    if (dragStart === undefined) return;
+    const dx = event.clientX - dragStart;
+    dragStart = undefined;
+    if (Math.abs(dx) <= 35) return;
+    dragged = true;
+    select(current - Math.sign(dx));
+  });
+  viewport.addEventListener("click", event => {
+    if (!dragged) return;
+    dragged = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
   let swipeStart;
   viewport.addEventListener("touchstart", (event) => {
     swipeStart = event.touches[0];

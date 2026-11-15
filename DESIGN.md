@@ -28,3 +28,11 @@ O player preserva a visualização dentro da janela de reprodução. O Cover Flo
 O catálogo editorial pertence à plataforma. O perfil reúne identidade, acervo e aparência do dono. Fotografias ornamentais e o varal pertencem ao contexto pessoal. Adesivos decoram uma região do cabeçalho em coordenadas relativas, com ponteiro transparente na publicação.
 
 O perfil abriga o reprodutor quadrado em Ouvindo agora. O status de coleção aparece separado. Os presets analisam a faixa local por AnalyserNode e usam Canvas 2D. Fontes sem análise recebem indicação de ambiente. Movimento de navegação usa a articulação de um livro, o deslocamento lateral de uma caixa e a aproximação de um canal.
+
+## Referências de interação e acabamento
+
+- A lombada e a abertura discreta da capa nas vistas de catálogo seguem a ideia do [Perspective Book](https://spell.sh/docs/perspective-book). O recorte quadrado e a separação entre visual e transporte dialogam com o [Spotify Card do Spell UI](https://spell.sh/docs/spotify-card).
+- O arraste horizontal do Cover Flow usa o foco em uma capa como na [Circular Gallery](https://reactbits.dev/components/circular-gallery). A navegação mantém setas, toque e links. A implementação é original em CSS e JavaScript Vanilla. A licença do React Bits inclui Commons Clause. [Repositório e licença](https://github.com/DavidHDev/react-bits)
+- [Refero](https://styles.refero.design/) e [Inspora](https://www.inspora.design/websites) servem como referência de hierarquia editorial e da relação entre catálogo, fotografia e tipografia. Os tons, a densidade e o acervo continuam sendo os do MinhaEstante.
+- Flip e Draggable oferecem continuidade e controle de arraste. O Cover Flow preserva seus elementos e atualiza as transformações CSS das capas existentes. [GSAP Flip](https://gsap.com/docs/v3/Plugins/Flip/) · [GSAP Draggable](https://gsap.com/docs/v3/Plugins/Draggable/)
+- O scroll nativo mantém o mesmo comportamento entre catálogo, perfil e modal. A interação só faz sentido no seletor de capas, então Lenis não foi incorporado. [Lenis](https://lenis.dev/)
