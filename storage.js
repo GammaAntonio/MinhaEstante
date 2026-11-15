@@ -21,6 +21,7 @@ export function read(key, fallback = null) {
 let serverPersistenceEnabled = false;
 let persistTimer = null;
 let homeDirectory = null;
+let directoryUpgrade = null;
 const pendingUsers = new Map();
 
 async function request(path, options = {}) {
@@ -55,6 +56,12 @@ export async function bootstrapAnonymousHome() {
   localStorage.removeItem(KEYS.session);
   homeDirectory = directory.users;
   return true;
+}
+
+export async function ensureFullUsers() {
+  if (!homeDirectory) return;
+  directoryUpgrade ??= refreshUsers().finally(() => { directoryUpgrade = null; });
+  await directoryUpgrade;
 }
 
 async function persistUserNow(user) {

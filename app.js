@@ -1336,26 +1336,22 @@ async function render(route, active) {
 async function boot() {
   try {
     const hadSession = !!Store.read(Store.KEYS.session);
-    const isHome = pathname => !pathname || pathname === "#/home" || pathname === "#/";
-    const directoryOnly = isHome(location.hash) &&
+    const publicCatalog = name => ["home", "livros", "albuns"].includes(name || "home");
+    const initialRoute = location.hash.slice(2).split(/[/?]/)[0];
+    const directoryOnly = publicCatalog(initialRoute) &&
       await Store.bootstrapAnonymousHome().catch(() => false);
     if (!directoryOnly) await Store.bootstrapStorage();
     if (hadSession && !Store.currentUser()) notify("Sua sessão terminou. Entre novamente com a mesma senha.");
-    let fullStore = directoryOnly ? null : Promise.resolve();
     let coverWorkerRequested = false;
     startRouter(async (route, active) => {
-      if (!route.parts.length || route.parts[0] === "home") return render(route, active);
       if (!coverWorkerRequested && navigator.serviceWorker &&
           ["livros", "albuns", "pagina", "livro", "album"].includes(route.parts[0])) {
         coverWorkerRequested = true;
         navigator.serviceWorker.register("/cover-cache.js").catch(() => {});
       }
-      fullStore ??= Store.refreshUsers().catch(error => {
-        fullStore = null;
-        throw error;
-      });
+      if (publicCatalog(route.parts[0])) return render(route, active);
       try {
-        await fullStore;
+        await Store.ensureFullUsers();
         if (active()) await render(route, active);
       } catch {
         if (active()) {
@@ -1384,6 +1380,16 @@ document.querySelector(".skip").addEventListener("click", (e) => {
   document.getElementById("main")?.focus();
 });
 
+let mediaSelection = 0;
+const openMedia = guarded(async (type, id, username) => {
+  const selection = ++mediaSelection;
+  const route = location.hash;
+  await Store.ensureFullUsers();
+  if (selection !== mediaSelection || route !== location.hash) return;
+  if (type === "album") openAlbumStyled(id, username || Store.currentUser()?.username || "");
+  else openBookModal(id);
+});
+
 document.addEventListener("click", (event) => {
   if (event.defaultPrevented || event.button !== 0 || event.metaKey ||
     event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -1395,15 +1401,13 @@ document.addEventListener("click", (event) => {
   const [, type, rawId, rawUser = ""] = match;
   const mediaId = decodeURIComponent(rawId);
   const username = rawUser ? decodeURIComponent(rawUser) : "";
-  if (type === "album") openAlbumStyled(mediaId, username || Store.currentUser()?.username || "");
-  else openBookModal(mediaId);
+  openMedia(type, mediaId, username);
 });
 
 addEventListener("booksite:openmedia", (event) => {
   const { type, id, username } = event.detail || {};
   if (!id) return;
-  if (type === "album") openAlbumStyled(id, username || Store.currentUser()?.username || "");
-  else openBookModal(id);
+  openMedia(type, id, username);
 });
 
 app.addEventListener("click", (event) => {
