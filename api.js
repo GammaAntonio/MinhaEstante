@@ -26,10 +26,12 @@ async function fetchJSON(url) {
       throw new Error('Você está offline. Os livros já consultados continuam disponíveis.');
     // A API pública da Open Library pede moderação; não fazer buscas a cada tecla.
     const openLibrary = new URL(url).hostname === "openlibrary.org";
-    const operation = (openLibrary ? queue : Promise.resolve())
+    const useProxy = openLibrary && typeof window !== "undefined";
+    const throttle = openLibrary && !useProxy;
+    const operation = (throttle ? queue : Promise.resolve())
       .catch(() => {})
       .then(async () => {
-        if (openLibrary) {
+        if (throttle) {
           const delay = 1100 - (Date.now() - lastRequest);
           if (delay > 0) await new Promise((r) => setTimeout(r, delay));
           lastRequest = Date.now();
@@ -37,7 +39,19 @@ async function fetchJSON(url) {
         const controller = new AbortController(),
           timer = setTimeout(() => controller.abort(), 14000);
         try {
-          const response = await fetch(url, { signal: controller.signal });
+          const source = new URL(url);
+          const params = new URLSearchParams({ resource: source.pathname });
+          if (source.pathname === "/search.json") {
+            const type = ["q", "title", "author", "isbn"].find(key => source.searchParams.has(key));
+            if (type) {
+              params.set("type", type);
+              params.set("query", source.searchParams.get(type));
+            }
+            params.set("page", source.searchParams.get("page") || "1");
+            params.set("limit", source.searchParams.get("limit") || "18");
+          }
+          const response = await fetch(useProxy ? `/catalog-api/openlibrary?${params}` : url,
+            { signal: controller.signal });
           if (!response.ok)
             throw new Error(
               `O serviço respondeu ${response.status}. Tente novamente em alguns instantes.`,
@@ -59,7 +73,7 @@ async function fetchJSON(url) {
           clearTimeout(timer);
         }
       });
-    if (openLibrary) queue = operation;
+    if (throttle) queue = operation;
     return operation;
   })();
   pending.set(url, task);
@@ -171,6 +185,15 @@ export function deduplicate(books) {
     else out[i] = supplement(out[i], b);
   }
   return out;
+}
+
+export function savedBookMatches(query, type) {
+  const key = normalize(query);
+  if (!key) return [];
+  return Object.values(catalog()).filter(book => {
+    const fields = { title: book.title, author: (book.authors || []).join(" "), isbn: (book.isbn13 || []).join(" ") };
+    return normalize(fields[type] ?? Object.values(fields).join(" ")).includes(key);
+  });
 }
 export const OpenLibraryService = {
   async search(query, type = 'q', page = 1) {
@@ -326,13 +349,7 @@ export const BookService = {
       }
     }
     if (!result?.books.length && warning) {
-      const local = Object.values(catalog()).filter((b) =>
-        normalize(
-          type === 'author'
-            ? b.authors.join(' ')
-            : b.title + ' ' + b.authors.join(' ') + ' ' + b.isbn13.join(' '),
-        ).includes(normalize(query)),
-      );
+      const local = savedBookMatches(query, type);
       return {
         books: local,
         total: local.length,

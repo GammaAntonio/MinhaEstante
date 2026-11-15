@@ -10,7 +10,7 @@ const inFlight = new Map();
 const ttl = 3_600_000;
 let pending = 0;
 
-async function readCached(file) {
+export async function readCached(file) {
   if (!file) return null;
   try {
     const info = await stat(file);
@@ -19,7 +19,7 @@ async function readCached(file) {
   } catch { return null; }
 }
 
-async function persist(dir, file, body) {
+export async function persist(dir, file, body) {
   const temporary = file + "." + randomUUID() + ".tmp";
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -35,7 +35,7 @@ async function persist(dir, file, body) {
   } catch { await unlink(temporary).catch(() => {}); }
 }
 
-async function boundedJson(response) {
+export async function boundedJson(response) {
   if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) {
     await response.body?.cancel();
     throw new Error("Resposta inválida do catálogo");

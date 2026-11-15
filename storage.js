@@ -64,6 +64,10 @@ export async function ensureFullUsers() {
   await directoryUpgrade;
 }
 
+export async function lookupKnownBooks(q, type) {
+  return (await request(`/api/persistence/known-books?${new URLSearchParams({ q, type })}`)).books;
+}
+
 async function persistUserNow(user) {
   return request(`/api/persistence/users/${encodeURIComponent(user.id)}`, {
     method: 'PUT',

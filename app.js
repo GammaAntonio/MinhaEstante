@@ -6,7 +6,7 @@ import { confirmAction } from "./ui.js";
 import { SITE_CONFIG } from "./config.js";
 import { STATUS, SEED_BOOKS } from "./data.js";
 import * as Store from "./storage.js";
-import { BookService } from "./api.js";
+import { BookService, savedBookMatches } from "./api.js";
 import { startRouter, navigate } from "./router.js";
 import {
   h, link, panel, booksGrid, cover, stars, empty, input, textarea,
@@ -503,6 +503,14 @@ function catalogPage(query, active) {
     return container;
   }
   status.textContent = "buscando na Open Library…";
+  const saved = page === 1 ? savedBookMatches(q, type).slice(0, 6) : [];
+  if (saved.length) results.append(panel("Já no catálogo", booksGrid(saved)));
+  let searching = true;
+  if (page === 1 && !saved.length) {
+    void Store.lookupKnownBooks(q, type).then(books => {
+      if (active() && searching && books.length) results.append(panel("Já no acervo", booksGrid(books)));
+    }).catch(() => {});
+  }
   (async () => {
     try {
       const result = await BookService.search(q, type, page);
@@ -526,6 +534,8 @@ function catalogPage(query, active) {
         results.replaceChildren(h("div", { class: "error-box" },
           h("p", {}, e.message), button("tentar novamente", rerender)));
       }
+    } finally {
+      searching = false;
     }
   })();
   return container;

@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { musicProxy } from "./music-proxy.mjs";
+import { booksProxy } from "./books-proxy.mjs";
 import { blankUser } from "./data.js";
 import { normalizeImage, validateMp3 } from "./media-validation.mjs";
 import {
@@ -1198,6 +1199,33 @@ async function persistenceApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/persistence/known-books") {
+    const term = url.searchParams.get("q")?.trim() || "";
+    const type = url.searchParams.get("type") || "q";
+    if (term.length < 2 || term.length > 200 || !["q", "title", "author", "isbn"].includes(type)) {
+      json(res, 200, { books: [] });
+      return true;
+    }
+    const { rows } = await repository.query(`SELECT DISTINCT ON (s.metadata->>'id')
+      s.metadata->>'id' AS id, s.metadata->>'title' AS title,
+      s.metadata->>'coverUrl' AS "coverUrl",
+      s.metadata->>'id' AS "openLibraryWorkId",
+      coalesce(author.names, '[]'::jsonb) AS authors
+      FROM catalog_snapshots s
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(a.name ORDER BY a.ordinal) AS names FROM snapshot_authors a
+        WHERE (a.user_id,a.scope,a.record_key)=(s.user_id,s.scope,s.record_key)
+      ) author ON true
+      WHERE s.scope = 'library' AND s.metadata->>'id' ~ '^OL[0-9]+W$'
+      AND strpos(lower(CASE $2 WHEN 'title' THEN s.metadata->>'title'
+        WHEN 'author' THEN author.names::text WHEN 'isbn' THEN s.metadata->>'isbn13'
+        ELSE concat_ws(' ',s.metadata->>'title',author.names::text,s.metadata->>'isbn13') END),
+        lower($1)) > 0
+      ORDER BY s.metadata->>'id', s.user_id LIMIT 6`, [term, type]);
+    json(res, 200, { books: rows });
+    return true;
+  }
+
   if (req.method === "PUT" && url.pathname === "/api/persistence/users") {
     const payload = await readJsonBody(req);
     if (!Array.isArray(payload?.users)) {
@@ -1352,6 +1380,7 @@ const server = http.createServer(async (req, res) => {
     if (await socialApi(req, res, url)) return;
     if (await persistenceApi(req, res, url)) return;
     if (await musicProxy(req, res, url, path.join(dataDir, "catalog-cache"))) return;
+    if (await booksProxy(req, res, url, path.join(dataDir, "books-cache"))) return;
 
     const pathname = decodeURIComponent(url.pathname);
     if (/(?:^|\/)(?:\.[^/]+|data|database|scripts|node_modules)(?:\/|$)/.test(pathname.replaceAll("\\", "/"))) {
