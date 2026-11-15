@@ -78,7 +78,8 @@ const authWindowMs = 60_000;
 let authWindow = -1;
 
 function authRetryAfter(req, url) {
-  const limit = req.method === "POST" && authLimits.get(url.pathname);
+  const limit = req.method === "POST" ? authLimits.get(url.pathname) :
+    req.method === "PUT" && url.pathname === "/api/account" ? 10 : 0;
   if (!limit) return 0;
   const now = Date.now();
   const window = Math.floor(now / authWindowMs);
@@ -90,7 +91,7 @@ function authRetryAfter(req, url) {
   const forwarded = req.headers["x-forwarded-for"];
   const client = isHttps(req) && typeof forwarded === "string" && isIP(forwarded)
     ? forwarded : req.socket.remoteAddress;
-  const key = `${url.pathname}:${client}`;
+  const key = `${req.method}:${url.pathname}:${client}`;
   const attempts = authAttempts.get(key) || 0;
   if (attempts >= limit || (!attempts && authAttempts.size >= 4096))
     return Math.ceil(((window + 1) * authWindowMs - now) / 1000);
@@ -669,7 +670,20 @@ async function accountApi(req, res, url) {
       return true;
     }
     const account = await withDataMutation(async () => {
+      if (!(await requestUser(req, [user]))) {
+        throw Object.assign(new Error("Sua sessão expirou. Entre novamente."), { statusCode: 401 });
+      }
       const accounts = await readAccountsFile();
+      const index = accounts.findIndex((item) => String(item.userId) === String(user.id));
+      const next = accountRecord(user, { ...nextData, passwordHint: accounts[index]?.passwordHint });
+      if (accounts[index]?.email !== next.email) {
+        const { rows: [credential] } = await repository.query("SELECT password_hash FROM credentials WHERE user_id = $1", [user.id]);
+        if (typeof payload.currentPassword !== "string" || payload.currentPassword.length > 200 ||
+            !(await verifyPassword(payload.currentPassword, credential?.password_hash))) {
+          throw Object.assign(new Error("Confirme a senha atual para trocar o e-mail."), { statusCode: 403 });
+        }
+        await repository.query("DELETE FROM password_resets WHERE user_id = $1", [user.id]);
+      }
       if (
         accounts.some(
           (item) =>
@@ -680,16 +694,6 @@ async function accountApi(req, res, url) {
         const error = new Error("Já existe uma conta com este e-mail.");
         error.statusCode = 409;
         throw error;
-      }
-      const index = accounts.findIndex((item) => String(item.userId) === String(user.id));
-      const next = accountRecord(user, { ...nextData, passwordHint: accounts[index]?.passwordHint });
-      if (accounts[index]?.email !== next.email) {
-        const { rows: [credential] } = await repository.query("SELECT password_hash FROM credentials WHERE user_id = $1", [user.id]);
-        if (typeof payload.currentPassword !== "string" || payload.currentPassword.length > 200 ||
-            !(await verifyPassword(payload.currentPassword, credential?.password_hash))) {
-          throw Object.assign(new Error("Confirme a senha atual para trocar o e-mail."), { statusCode: 403 });
-        }
-        await repository.query("DELETE FROM password_resets WHERE user_id = $1", [user.id]);
       }
       if (index >= 0) accounts[index] = next;
       else accounts.push(next);

@@ -235,4 +235,22 @@ test("servidor entrega os assets públicos e protege arquivos internos e mutaç�
     }
     assert.ok(limited);
   });
+
+  await t.test("atualização do cadastro tem limite próprio de tentativas", async () => {
+    let limited = false;
+    for (let i = 0; i < 21; i++) {
+      const response = await fetch(base + "/api/account", {
+        method: "PUT",
+        headers: { "X-Forwarded-Proto": "https", "X-Forwarded-For": "192.0.2.11" },
+      });
+      if (response.status === 429) {
+        assert.ok(i >= 10);
+        assert.ok(Number(response.headers.get("retry-after")) > 0);
+        limited = true;
+        break;
+      }
+      assert.equal(response.status, 401);
+    }
+    assert.ok(limited);
+  });
 });
