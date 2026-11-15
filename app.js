@@ -1336,8 +1336,28 @@ async function render(route, active) {
 
 async function boot() {
   try {
-    await Store.bootstrapStorage();
-    startRouter(render);
+    const isHome = pathname => !pathname || pathname === "#/home" || pathname === "#/";
+    const directoryOnly = isHome(location.hash) &&
+      await Store.bootstrapAnonymousHome().catch(() => false);
+    if (!directoryOnly) await Store.bootstrapStorage();
+    let fullStore = directoryOnly ? null : Promise.resolve();
+    startRouter(async (route, active) => {
+      if (!route.parts.length || route.parts[0] === "home") return render(route, active);
+      fullStore ??= Store.refreshUsers().catch(error => {
+        fullStore = null;
+        throw error;
+      });
+      try {
+        await fullStore;
+        if (active()) await render(route, active);
+      } catch {
+        if (active()) {
+          app.replaceChildren(h("div", { class: "site page-content error-box" },
+            h("h1", {}, "Não foi possível carregar os perfis."),
+            link("Voltar à home", "#/home")));
+        }
+      }
+    });
   } catch (e) {
     app.replaceChildren(h("div", { class: "site page-content error-box" },
       h("h1", {}, "Não foi possível iniciar a MinhaEstante."),

@@ -452,6 +452,10 @@ async function authApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
     const user = await requestUser(req);
+    if (!user) {
+      json(res, 200, { user: null });
+      return true;
+    }
     const friendships = await visibleFriendships(await readFriendshipsFile(), user?.id);
     json(res, 200, { user: publicUser(user, friendships, user && String(user.id)) });
     return true;
@@ -1171,6 +1175,22 @@ async function persistenceApi(req, res, url) {
     const friendships = await readFriendshipsFile();
     const viewer = await requestUser(req, users);
     json(res, 200, { users: publicUsers(users, await visibleFriendships(friendships, viewer?.id), viewer && String(viewer.id)) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/persistence/home-directory") {
+    const { rows } = await repository.query(`SELECT u.id, u.username, u.role,
+        jsonb_build_object('title', p.configuration->>'title',
+          'displayName', p.configuration->>'displayName') AS page,
+        CASE WHEN u.username = 'antonio' THEN coalesce((
+          SELECT jsonb_agg(first_post.metadata) FROM (
+            SELECT r.metadata FROM user_records r WHERE r.user_id = u.id AND r.category = 'posts'
+            ORDER BY r.ordinal LIMIT 1
+          ) first_post
+        ),'[]'::jsonb) ELSE '[]'::jsonb END AS posts
+      FROM users u LEFT JOIN profiles p ON p.user_id = u.id AND p.media = 'legacy'
+      ORDER BY u.ordinal`);
+    json(res, 200, { users: rows.map(user => ({ ...user, isCreator: user.id === creatorUserId })) });
     return true;
   }
 

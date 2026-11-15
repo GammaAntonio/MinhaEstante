@@ -40,6 +40,18 @@ test("servidor entrega os assets públicos e protege arquivos internos e mutaç�
     }
   });
 
+  await t.test("diretório inicial publica somente informações usadas na home", async () => {
+    const response = await fetch(base + "/api/persistence/home-directory");
+    assert.equal(response.status, 200);
+    const { users } = await response.json();
+    assert.ok(users.length > 0);
+    for (const user of users) {
+      assert.deepEqual(Object.keys(user).sort(), ["id", "isCreator", "page", "posts", "role", "username"]);
+      assert.deepEqual(Object.keys(user.page).sort(), ["displayName", "title"]);
+      assert.ok(user.posts.length <= 1);
+    }
+  });
+
   await t.test("logout cross-origin é recusado antes de emitir cookie", async () => {
     const response = await fetch(base + "/api/auth/logout", {
       method: "POST",

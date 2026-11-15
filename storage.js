@@ -20,6 +20,7 @@ export function read(key, fallback = null) {
 }
 let serverPersistenceEnabled = false;
 let persistTimer = null;
+let homeDirectory = null;
 const pendingUsers = new Map();
 
 async function request(path, options = {}) {
@@ -39,8 +40,21 @@ export async function refreshUsers() {
   const payload = await request('/api/persistence/users');
   if (!Array.isArray(payload.users)) throw new Error('Resposta de usuários inválida.');
   write(KEYS.users, payload.users);
+  homeDirectory = null;
   serverPersistenceEnabled = true;
   return payload.users;
+}
+
+export async function bootstrapAnonymousHome() {
+  if (read(KEYS.session)) return false;
+  const session = await request('/api/auth/session');
+  if (session.user) return false;
+  const directory = await request('/api/persistence/home-directory');
+  if (!Array.isArray(directory.users)) return false;
+  initStorage();
+  localStorage.removeItem(KEYS.session);
+  homeDirectory = directory.users;
+  return true;
 }
 
 async function persistUserNow(user) {
@@ -455,7 +469,7 @@ function migrateEarlyDemo() {
     read(KEYS.recent, []).map((id) => mapping[id] || id),
   );
 }
-export const users = () => read(KEYS.users, []);
+export const users = () => homeDirectory || read(KEYS.users, []);
 export const currentUser = () => users().find((u) => u.id === read(KEYS.session)) || null;
 export const userByName = (name) => users().find((u) => u.username === name);
 

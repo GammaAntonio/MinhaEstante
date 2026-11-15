@@ -1,0 +1,14 @@
+147-15-126-191.sslip.io {
+    @static path / *.js *.css
+    encode @static {
+        gzip 1
+    }
+    @publicProfiles {
+        path /api/persistence/users
+        header !Cookie
+    }
+    encode @publicProfiles {
+        gzip 1
+    }
+    reverse_proxy 127.0.0.1:4183
+}
